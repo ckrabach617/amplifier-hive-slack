@@ -207,3 +207,106 @@ class TestInProcessSessionManager:
         assert result_b == "beta response"
         # Two separate sessions created (different instance names, same conv_id)
         assert mock_prepared.create_session.call_count == 2
+
+
+import json
+
+
+class TestSessionPersistence:
+    """Test transcript persistence after execution."""
+
+    @pytest.mark.asyncio
+    async def test_save_transcript_creates_files(self, tmp_path, monkeypatch):
+        """Transcript and metadata files are created after execution."""
+        monkeypatch.setattr("hive_slack.service.SESSIONS_DIR", tmp_path)
+
+        manager = InProcessSessionManager(make_config())
+
+        mock_context = MagicMock()
+        mock_context.get_messages.return_value = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+
+        mock_session = AsyncMock()
+        mock_session.execute.return_value = "hi there"
+        mock_session.cleanup = AsyncMock()
+        mock_session.coordinator = MagicMock()
+        mock_session.coordinator.get.return_value = mock_context
+
+        mock_prepared = MagicMock()
+        mock_prepared.create_session = AsyncMock(return_value=mock_session)
+        manager._prepared = {"foundation": mock_prepared}
+
+        await manager.execute("alpha", "C123:thread1", "hello")
+
+        # Check transcript file exists
+        transcript_dir = tmp_path / "alpha" / "C123_thread1"
+        assert (transcript_dir / "transcript.jsonl").exists()
+        assert (transcript_dir / "metadata.json").exists()
+
+        # Check transcript content
+        lines = (transcript_dir / "transcript.jsonl").read_text().strip().split("\n")
+        assert len(lines) == 2
+        assert json.loads(lines[0])["role"] == "user"
+        assert json.loads(lines[1])["role"] == "assistant"
+
+        # Check metadata content
+        metadata = json.loads((transcript_dir / "metadata.json").read_text())
+        assert metadata["instance"] == "alpha"
+        assert metadata["conversation_id"] == "C123:thread1"
+        assert metadata["turn_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_save_transcript_handles_missing_context(self, tmp_path, monkeypatch):
+        """Persistence gracefully handles sessions without get_messages."""
+        monkeypatch.setattr("hive_slack.service.SESSIONS_DIR", tmp_path)
+
+        manager = InProcessSessionManager(make_config())
+
+        mock_session = AsyncMock()
+        mock_session.execute.return_value = "hi there"
+        mock_session.cleanup = AsyncMock()
+        mock_session.coordinator = MagicMock()
+        mock_session.coordinator.get.return_value = None  # No context manager
+
+        mock_prepared = MagicMock()
+        mock_prepared.create_session = AsyncMock(return_value=mock_session)
+        manager._prepared = {"foundation": mock_prepared}
+
+        # Should not raise, just log a warning
+        result = await manager.execute("alpha", "C123:thread1", "hello")
+        assert result == "hi there"
+
+    @pytest.mark.asyncio
+    async def test_save_transcript_does_not_break_execute(self, tmp_path, monkeypatch):
+        """If persistence fails, execute() still returns the response."""
+        # Point to a read-only directory to force an error
+        read_only_dir = tmp_path / "readonly"
+        read_only_dir.mkdir()
+        read_only_dir.chmod(0o444)
+        monkeypatch.setattr("hive_slack.service.SESSIONS_DIR", read_only_dir)
+
+        manager = InProcessSessionManager(make_config())
+
+        mock_context = MagicMock()
+        mock_context.get_messages.return_value = [
+            {"role": "user", "content": "hello"},
+        ]
+
+        mock_session = AsyncMock()
+        mock_session.execute.return_value = "response works"
+        mock_session.cleanup = AsyncMock()
+        mock_session.coordinator = MagicMock()
+        mock_session.coordinator.get.return_value = mock_context
+
+        mock_prepared = MagicMock()
+        mock_prepared.create_session = AsyncMock(return_value=mock_session)
+        manager._prepared = {"foundation": mock_prepared}
+
+        # Should still return the response even if persistence fails
+        result = await manager.execute("alpha", "C123:thread1", "hello")
+        assert result == "response works"
+
+        # Restore permissions for cleanup
+        read_only_dir.chmod(0o755)

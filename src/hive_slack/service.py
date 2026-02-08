@@ -7,12 +7,16 @@ The interface (execute signature) stays the same — only the implementation cha
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 from hive_slack.config import HiveSlackConfig
 
 logger = logging.getLogger(__name__)
+
+SESSIONS_DIR = Path("~/.amplifier/hive/sessions").expanduser()
 
 
 class InProcessSessionManager:
@@ -107,6 +111,10 @@ class InProcessSessionManager:
                 prompt[:80],
             )
             response = await session.execute(prompt)
+
+            # Persist transcript after each turn (best-effort)
+            await self._save_transcript(instance_name, conversation_id, session)
+
             return response
 
     async def _get_or_create_session(self, instance_name: str, conversation_id: str):
@@ -134,6 +142,65 @@ class InProcessSessionManager:
             session = await prepared.create_session(session_cwd=working_dir)
             self._sessions[session_key] = session
         return self._sessions[session_key]
+
+    async def _save_transcript(
+        self,
+        instance_name: str,
+        conversation_id: str,
+        session: object,
+    ) -> None:
+        """Save session transcript to JSONL file. Best-effort — never raises."""
+        try:
+            # Get messages from the context manager
+            coordinator = getattr(session, "coordinator", None)
+            if coordinator is None:
+                return
+            context = (
+                coordinator.get("context") if hasattr(coordinator, "get") else None
+            )
+            if context is None or not hasattr(context, "get_messages"):
+                return
+
+            messages = context.get_messages()
+            if not messages:
+                return
+
+            session_dir = (
+                SESSIONS_DIR / instance_name / conversation_id.replace(":", "_")
+            )
+            session_dir.mkdir(parents=True, exist_ok=True)
+
+            # Write transcript as JSONL
+            transcript_path = session_dir / "transcript.jsonl"
+            with open(transcript_path, "w") as f:
+                for msg in messages:
+                    if isinstance(msg, dict):
+                        f.write(json.dumps(msg) + "\n")
+
+            # Write metadata
+            metadata = {
+                "instance": instance_name,
+                "conversation_id": conversation_id,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "turn_count": len(
+                    [
+                        m
+                        for m in messages
+                        if isinstance(m, dict) and m.get("role") == "user"
+                    ]
+                ),
+            }
+            metadata_path = session_dir / "metadata.json"
+            with open(metadata_path, "w") as f:
+                json.dump(metadata, f, indent=2)
+
+        except Exception:
+            logger.warning(
+                "Failed to save transcript for %s:%s",
+                instance_name,
+                conversation_id,
+                exc_info=True,
+            )
 
     async def stop(self) -> None:
         """Cleanup all sessions."""

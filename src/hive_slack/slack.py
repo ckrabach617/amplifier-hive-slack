@@ -191,6 +191,7 @@ class ChannelConfig:
     instance: str | None = None
     mode: str | None = None
     default: str | None = None
+    name: str = ""  # Channel name for context enrichment
 
 
 class SlackConnector:
@@ -219,9 +220,28 @@ class SlackConnector:
         # Track messages we've already handled (prevent double-processing)
         self._handled_messages: set[str] = set()
 
+        # Track prompts that generated bot responses (for reaction commands)
+        # message_ts → (instance_name, conversation_id, prompt)
+        self._message_prompts: dict[str, tuple[str, str, str]] = {}
+
         # Register event handlers
         self._app.event("app_mention")(self._handle_mention)
         self._app.event("message")(self._handle_message)
+        # Requires Slack app scopes: reactions:read, reactions:write
+        # Requires event subscription: reaction_added
+        self._app.event("reaction_added")(self._handle_reaction)
+
+    def _build_prompt(
+        self, text: str, user: str, channel: str, channel_name: str = ""
+    ) -> str:
+        """Enrich the raw message with context about who/where."""
+        parts = []
+        if channel_name:
+            parts.append(f"[From <@{user}> in #{channel_name}]")
+        else:
+            parts.append(f"[DM from <@{user}>]")
+        parts.append(text)
+        return "\n".join(parts)
 
     async def _handle_mention(self, event: dict, say) -> None:
         """Handle @mention events — the core message flow."""
@@ -248,6 +268,10 @@ class SlackConnector:
 
         conversation_id = f"{channel}:{thread_ts}"
 
+        # Get channel name for context enrichment
+        channel_config = await self._get_channel_config(channel)
+        prompt = self._build_prompt(prompt, user, channel, channel_config.name)
+
         logger.info(
             "Mention from %s → %s in %s: %s",
             user,
@@ -263,12 +287,13 @@ class SlackConnector:
                 prompt,
             )
 
-            await say(
+            result = await say(
                 text=markdown_to_slack(response),
                 thread_ts=thread_ts,
                 username=instance.persona.name,
                 icon_emoji=instance.persona.emoji,
             )
+            self._track_prompt(result, instance_name, conversation_id, prompt)
         except Exception:
             logger.exception("Error handling mention in %s", conversation_id)
             await say(
@@ -323,7 +348,7 @@ class SlackConnector:
         # Only match if the first word IS an instance name exactly
         first_word = lower.split()[0] if lower.split() else ""
         if first_word in known_instances:
-            rest = text[len(first_word):].strip()
+            rest = text[len(first_word) :].strip()
             if rest:
                 return first_word, rest
 
@@ -348,13 +373,20 @@ class SlackConnector:
         """
         logger.debug(
             "Message event received: channel=%s user=%s bot_id=%s subtype=%s text=%s",
-            event.get("channel"), event.get("user"), event.get("bot_id"),
-            event.get("subtype"), (event.get("text", ""))[:50],
+            event.get("channel"),
+            event.get("user"),
+            event.get("bot_id"),
+            event.get("subtype"),
+            (event.get("text", ""))[:50],
         )
 
         # Skip bot messages (prevent loops!)
         if event.get("bot_id") or event.get("subtype"):
-            logger.debug("Skipping: bot_id=%s subtype=%s", event.get("bot_id"), event.get("subtype"))
+            logger.debug(
+                "Skipping: bot_id=%s subtype=%s",
+                event.get("bot_id"),
+                event.get("subtype"),
+            )
             return
 
         # Skip messages from our own bot user (belt + suspenders for loop prevention)
@@ -380,28 +412,42 @@ class SlackConnector:
         channel = event.get("channel", "")
         thread_ts = event.get("thread_ts") or event.get("ts", "")
         user = event.get("user", "unknown")
+        channel_type = event.get("channel_type", "")
 
-        # Get channel config from topic
-        channel_config = await self._get_channel_config(channel)
-
-        # Route based on config
-        if channel_config.instance:
-            # Single-instance channel: all messages go to this instance
-            instance_name = channel_config.instance
-            prompt = text
-        elif channel_config.mode == "roundtable":
-            # TODO: Milestone 4 — fan out to all instances
-            # For now, treat as default routing
-            instance_name = self._config.default_instance
-            prompt = text
-        elif channel_config.default:
-            # Default instance channel: check for /name override, else use default
+        if channel_type == "im":
+            # DM: use natural addressing or default instance, no topic needed.
+            # Requires Slack app scopes: im:read, im:history
+            # Requires event subscription: message.im
             instance_name, prompt = self._parse_instance_prefix(
-                text, self._config.instance_names, channel_config.default
+                text, self._config.instance_names, self._config.default_instance
             )
+            conversation_id = f"dm:{user}"
+            channel_name = ""  # Will produce DM context in _build_prompt
         else:
-            # Unconfigured channel: ignore non-mention messages
-            return
+            # Get channel config from topic
+            channel_config = await self._get_channel_config(channel)
+
+            # Route based on config
+            if channel_config.instance:
+                # Single-instance channel: all messages go to this instance
+                instance_name = channel_config.instance
+                prompt = text
+            elif channel_config.mode == "roundtable":
+                # TODO: Milestone 4 — fan out to all instances
+                # For now, treat as default routing
+                instance_name = self._config.default_instance
+                prompt = text
+            elif channel_config.default:
+                # Default instance channel: check for /name override, else use default
+                instance_name, prompt = self._parse_instance_prefix(
+                    text, self._config.instance_names, channel_config.default
+                )
+            else:
+                # Unconfigured channel: ignore non-mention messages
+                return
+
+            conversation_id = f"{channel}:{thread_ts}"
+            channel_name = channel_config.name
 
         # Verify instance exists
         try:
@@ -410,14 +456,15 @@ class SlackConnector:
             logger.warning("Unknown instance '%s' in channel config", instance_name)
             return
 
-        conversation_id = f"{channel}:{thread_ts}"
+        # Enrich prompt with context
+        prompt = self._build_prompt(prompt, user, channel, channel_name)
 
         logger.info(
             "Message from %s → %s in %s: %s",
             user,
             instance_name,
             conversation_id,
-            text[:100],
+            prompt[:100],
         )
 
         try:
@@ -427,12 +474,13 @@ class SlackConnector:
                 prompt,
             )
 
-            await say(
+            result = await say(
                 text=markdown_to_slack(response),
                 thread_ts=thread_ts,
                 username=instance.persona.name,
                 icon_emoji=instance.persona.emoji,
             )
+            self._track_prompt(result, instance_name, conversation_id, prompt)
         except Exception:
             logger.exception("Error handling message in %s", conversation_id)
             await say(
@@ -440,6 +488,80 @@ class SlackConnector:
                 thread_ts=thread_ts,
                 username=instance.persona.name,
                 icon_emoji=instance.persona.emoji,
+            )
+
+    def _track_prompt(
+        self,
+        say_result: object,
+        instance_name: str,
+        conversation_id: str,
+        prompt: str,
+    ) -> None:
+        """Track the prompt that generated a bot response for reaction commands."""
+        if isinstance(say_result, dict) and say_result.get("ts"):
+            self._message_prompts[say_result["ts"]] = (
+                instance_name,
+                conversation_id,
+                prompt,
+            )
+            # Keep bounded (last 500 entries)
+            if len(self._message_prompts) > 500:
+                oldest_keys = list(self._message_prompts.keys())[:-500]
+                for key in oldest_keys:
+                    del self._message_prompts[key]
+
+    async def _handle_reaction(self, event: dict, say) -> None:
+        """Handle emoji reactions on bot messages.
+
+        Supported reactions:
+            🔄 repeat / arrows_counterclockwise → Regenerate response
+            ❌ x → Cancel acknowledgment (full cancellation needs coordinator)
+
+        Requires Slack app scopes: reactions:read, reactions:write
+        Requires event subscription: reaction_added
+        """
+        reaction = event.get("reaction", "")
+        item = event.get("item", {})
+        channel = item.get("channel", "")
+        message_ts = item.get("ts", "")
+        user = event.get("user", "")
+
+        # Only handle reactions on our bot's messages
+        if message_ts not in self._message_prompts:
+            return
+
+        if reaction in ("repeat", "arrows_counterclockwise"):
+            # Regenerate: re-execute the original prompt
+            instance_name, conversation_id, original_prompt = self._message_prompts[
+                message_ts
+            ]
+            instance = self._config.get_instance(instance_name)
+
+            logger.info("Regenerate requested by %s for %s", user, message_ts)
+
+            try:
+                response = await self._service.execute(
+                    instance_name,
+                    conversation_id,
+                    original_prompt,
+                )
+                await self._app.client.chat_postMessage(
+                    channel=channel,
+                    text=markdown_to_slack(response),
+                    thread_ts=message_ts,
+                    username=instance.persona.name,
+                    icon_emoji=instance.persona.emoji,
+                )
+            except Exception:
+                logger.exception("Error regenerating response")
+
+        elif reaction == "x":
+            logger.info("Cancel requested by %s for %s", user, message_ts)
+            # For now, just acknowledge. Full cancellation needs coordinator integration.
+            await self._app.client.reactions_add(
+                channel=channel,
+                timestamp=message_ts,
+                name="white_check_mark",
             )
 
     async def _get_channel_config(self, channel_id: str) -> ChannelConfig:
@@ -452,14 +574,18 @@ class SlackConnector:
             return self._channel_cache[channel_id]
 
         # Fetch channel info from Slack API
+        channel_name = ""
         try:
             result = await self._app.client.conversations_info(channel=channel_id)
-            topic = result.get("channel", {}).get("topic", {}).get("value", "")
+            channel_data = result.get("channel", {})
+            topic = channel_data.get("topic", {}).get("value", "")
+            channel_name = channel_data.get("name", "")
         except Exception:
             logger.warning("Could not fetch channel info for %s", channel_id)
             topic = ""
 
         config = self._parse_channel_topic(topic, self._config.instance_names)
+        config.name = channel_name
         self._channel_cache[channel_id] = config
         self._cache_timestamps[channel_id] = now
 
