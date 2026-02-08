@@ -182,47 +182,73 @@ class TestHandleMention:
 
 
 class TestInstanceRouting:
-    """Test /instance-name routing from mentions."""
+    """Test natural instance addressing patterns."""
 
-    def test_parses_known_instance_prefix(self):
+    def test_colon_pattern(self):
+        """'alpha: review this' routes to alpha."""
         name, text = SlackConnector._parse_instance_prefix(
-            "/alpha review this code", ["alpha", "beta"], "alpha"
+            "alpha: review this code", ["alpha", "beta"], "alpha"
         )
         assert name == "alpha"
         assert text == "review this code"
 
-    def test_parses_different_instance(self):
+    def test_comma_pattern(self):
+        """'beta, what do you think' routes to beta."""
         name, text = SlackConnector._parse_instance_prefix(
-            "/beta what do you think?", ["alpha", "beta"], "alpha"
+            "beta, what do you think?", ["alpha", "beta"], "alpha"
         )
         assert name == "beta"
         assert text == "what do you think?"
 
-    def test_falls_back_to_default_for_no_prefix(self):
+    def test_at_pattern(self):
+        """'@beta review this' routes to beta."""
+        name, text = SlackConnector._parse_instance_prefix(
+            "@beta review this", ["alpha", "beta"], "alpha"
+        )
+        assert name == "beta"
+        assert text == "review this"
+
+    def test_hey_pattern(self):
+        """'hey alpha, look at this' routes to alpha."""
+        name, text = SlackConnector._parse_instance_prefix(
+            "hey alpha, look at this", ["alpha", "beta"], "alpha"
+        )
+        assert name == "alpha"
+        assert text == "look at this"
+
+    def test_name_as_first_word(self):
+        """'beta what do you think' routes to beta."""
+        name, text = SlackConnector._parse_instance_prefix(
+            "beta what do you think?", ["alpha", "beta"], "alpha"
+        )
+        assert name == "beta"
+        assert text == "what do you think?"
+
+    def test_falls_back_to_default_for_no_name(self):
         name, text = SlackConnector._parse_instance_prefix(
             "just a question", ["alpha", "beta"], "alpha"
         )
         assert name == "alpha"
         assert text == "just a question"
 
-    def test_falls_back_for_unknown_prefix(self):
-        """Unknown /name is treated as regular text, not a routing prefix."""
+    def test_no_false_positive_on_embedded_name(self):
+        """'the alpha version is...' should NOT route to alpha."""
         name, text = SlackConnector._parse_instance_prefix(
-            "/unknown hello", ["alpha", "beta"], "alpha"
+            "the alpha version is great", ["alpha", "beta"], "alpha"
         )
         assert name == "alpha"
-        assert text == "/unknown hello"
+        assert text == "the alpha version is great"
 
     def test_case_insensitive_matching(self):
         name, text = SlackConnector._parse_instance_prefix(
-            "/Alpha review this", ["alpha", "beta"], "alpha"
+            "Alpha: review this", ["alpha", "beta"], "alpha"
         )
         assert name == "alpha"
         assert text == "review this"
 
     @pytest.mark.asyncio
     async def test_mention_routes_to_specified_instance(self):
-        """@bot /beta question routes to beta with beta's persona."""
+        """@bot beta: question routes to beta with beta's persona."""
         mock_service = AsyncMock()
         mock_service.execute.return_value = "Beta's response"
 
@@ -231,7 +257,7 @@ class TestInstanceRouting:
 
         mock_say = AsyncMock()
         event = {
-            "text": "<@UBOT123> /beta what do you think?",
+            "text": "<@UBOT123> beta: what do you think?",
             "channel": "C99999",
             "ts": "1234567890.123456",
             "user": "U67890",
@@ -251,7 +277,7 @@ class TestInstanceRouting:
 
     @pytest.mark.asyncio
     async def test_mention_without_prefix_uses_default(self):
-        """@bot question (no /name) routes to default instance."""
+        """@bot question (no name) routes to default instance."""
         mock_service = AsyncMock()
         mock_service.execute.return_value = "Alpha's response"
 
@@ -440,7 +466,7 @@ class TestHandleMessage:
 
         mock_say = AsyncMock()
         event = {
-            "text": "/beta what do you think?",
+            "text": "beta: what do you think?",
             "channel": "C99999",
             "ts": "1234567890.123456",
             "user": "U67890",

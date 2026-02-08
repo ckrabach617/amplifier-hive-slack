@@ -278,21 +278,44 @@ class SlackConnector:
         known_instances: list[str],
         default: str,
     ) -> tuple[str, str]:
-        """Parse /instance-name prefix from message text.
+        """Parse instance name from the start of message text.
 
         Returns (instance_name, remaining_text).
 
-        Examples:
-            "/alpha review this code" → ("alpha", "review this code")
-            "/beta what do you think" → ("beta", "what do you think")
-            "just a question" → (default, "just a question")
-            "/unknown hello" → (default, "/unknown hello")  # unknown name kept as text
+        Supports natural addressing patterns:
+            "alpha: review this code"     → ("alpha", "review this code")
+            "alpha, what do you think"    → ("alpha", "what do you think")
+            "@alpha review this"          → ("alpha", "review this")
+            "alpha review this"           → ("alpha", "review this")
+            "hey alpha, look at this"     → ("alpha", "look at this")
+            "just a question"             → (default, "just a question")
+            "the alpha version is..."     → (default, "the alpha version is...")
         """
-        match = re.match(r"^/(\w+)\s+(.*)", text, re.DOTALL)
-        if match:
-            candidate = match.group(1).lower()
-            if candidate in known_instances:
-                return candidate, match.group(2).strip()
+        lower = text.lower()
+
+        # Pattern 1: "name: ..." or "name, ..."
+        match = re.match(r"^(\w+)[,:]\s+(.*)", text, re.DOTALL)
+        if match and match.group(1).lower() in known_instances:
+            return match.group(1).lower(), match.group(2).strip()
+
+        # Pattern 2: "@name ..."
+        match = re.match(r"^@(\w+)\s+(.*)", text, re.DOTALL)
+        if match and match.group(1).lower() in known_instances:
+            return match.group(1).lower(), match.group(2).strip()
+
+        # Pattern 3: "hey name, ..." or "hey name ..."
+        match = re.match(r"^hey\s+(\w+)[,\s]+(.*)", text, re.DOTALL | re.IGNORECASE)
+        if match and match.group(1).lower() in known_instances:
+            return match.group(1).lower(), match.group(2).strip()
+
+        # Pattern 4: "name ..." (name as first word, only if unambiguous)
+        # Only match if the first word IS an instance name exactly
+        first_word = lower.split()[0] if lower.split() else ""
+        if first_word in known_instances:
+            rest = text[len(first_word):].strip()
+            if rest:
+                return first_word, rest
+
         return default, text
 
     async def _handle_message(self, event: dict, say) -> None:
