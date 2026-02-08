@@ -12,7 +12,7 @@ Usage:
     python -m hive_slack.test_harness status
 
     # Slack integration test (requires bot to be running + user token):
-    python -m hive_slack.test_harness slack --channel C0ADT8A8ALU
+    python -m hive_slack.test_harness slack --channel YOUR_CHANNEL_ID
 """
 
 from __future__ import annotations
