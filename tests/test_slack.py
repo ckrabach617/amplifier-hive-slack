@@ -3,10 +3,14 @@
 import time
 
 import pytest
-from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from hive_slack.config import HiveSlackConfig, InstanceConfig, PersonaConfig, SlackConfig
+from hive_slack.config import (
+    HiveSlackConfig,
+    InstanceConfig,
+    PersonaConfig,
+    SlackConfig,
+)
 from hive_slack.slack import ChannelConfig, SlackConnector
 
 
@@ -128,7 +132,7 @@ class TestHandleMention:
         event = {
             "text": "<@UBOT123> follow up",
             "channel": "C99999",
-            "ts": "1234567890.999999",        # This message's ts
+            "ts": "1234567890.999999",  # This message's ts
             "thread_ts": "1234567890.123456",  # Parent thread ts
             "user": "U67890",
         }
@@ -310,17 +314,23 @@ class TestChannelTopicParsing:
     """Test channel topic -> routing config."""
 
     def test_parses_instance_directive(self):
-        config = SlackConnector._parse_channel_topic("[instance:alpha]", ["alpha", "beta"])
+        config = SlackConnector._parse_channel_topic(
+            "[instance:alpha]", ["alpha", "beta"]
+        )
         assert config.instance == "alpha"
         assert config.mode is None
         assert config.default is None
 
     def test_parses_mode_directive(self):
-        config = SlackConnector._parse_channel_topic("[mode:roundtable]", ["alpha", "beta"])
+        config = SlackConnector._parse_channel_topic(
+            "[mode:roundtable]", ["alpha", "beta"]
+        )
         assert config.mode == "roundtable"
 
     def test_parses_default_directive(self):
-        config = SlackConnector._parse_channel_topic("[default:beta]", ["alpha", "beta"])
+        config = SlackConnector._parse_channel_topic(
+            "[default:beta]", ["alpha", "beta"]
+        )
         assert config.default == "beta"
 
     def test_parses_mixed_topic_text(self):
@@ -331,7 +341,9 @@ class TestChannelTopicParsing:
         assert config.instance == "alpha"
 
     def test_ignores_unknown_instance(self):
-        config = SlackConnector._parse_channel_topic("[instance:unknown]", ["alpha", "beta"])
+        config = SlackConnector._parse_channel_topic(
+            "[instance:unknown]", ["alpha", "beta"]
+        )
         assert config.instance is None
 
     def test_empty_topic_returns_empty_config(self):
@@ -348,7 +360,9 @@ class TestChannelTopicParsing:
         assert config.mode == "roundtable"
 
     def test_case_insensitive(self):
-        config = SlackConnector._parse_channel_topic("[Instance:Alpha]", ["alpha", "beta"])
+        config = SlackConnector._parse_channel_topic(
+            "[Instance:Alpha]", ["alpha", "beta"]
+        )
         assert config.instance == "alpha"
 
 
@@ -498,7 +512,9 @@ class TestBuildPrompt:
     async def test_includes_user_and_channel(self):
         config = make_config()
         connector = SlackConnector(config, AsyncMock())
-        result = connector._build_prompt("What is Python?", "U12345", "C99999", "coding")
+        result = connector._build_prompt(
+            "What is Python?", "U12345", "C99999", "coding"
+        )
         assert "<@U12345>" in result
         assert "#coding" in result
         assert "What is Python?" in result
@@ -516,7 +532,9 @@ class TestBuildPrompt:
     async def test_preserves_original_text(self):
         config = make_config()
         connector = SlackConnector(config, AsyncMock())
-        result = connector._build_prompt("Tell me about Rust", "U12345", "C99999", "coding")
+        result = connector._build_prompt(
+            "Tell me about Rust", "U12345", "C99999", "coding"
+        )
         assert "Tell me about Rust" in result
 
 
@@ -568,7 +586,9 @@ class TestContextEnrichmentInHandlers:
         config = make_config()
         connector = SlackConnector(config, mock_service)
         connector._bot_user_id = "UBOTID"
-        connector._channel_cache["C99999"] = ChannelConfig(instance="alpha", name="coding")
+        connector._channel_cache["C99999"] = ChannelConfig(
+            instance="alpha", name="coding"
+        )
         connector._cache_timestamps["C99999"] = time.time()
 
         mock_say = AsyncMock()
@@ -708,7 +728,9 @@ class TestReactionHandling:
         connector = SlackConnector(config, mock_service)
         # Simulate a previous message we can regenerate
         connector._message_prompts["1234567890.111111"] = (
-            "alpha", "C99999:1234567890.000000", "What is Python?"
+            "alpha",
+            "C99999:1234567890.000000",
+            "What is Python?",
         )
         connector._app = AsyncMock()
         connector._app.client = AsyncMock()
@@ -739,7 +761,9 @@ class TestReactionHandling:
         config = make_config()
         connector = SlackConnector(config, mock_service)
         connector._message_prompts["1234567890.111111"] = (
-            "alpha", "C99999:1234567890.000000", "What is Python?"
+            "alpha",
+            "C99999:1234567890.000000",
+            "What is Python?",
         )
         connector._app = AsyncMock()
         connector._app.client = AsyncMock()
@@ -766,7 +790,9 @@ class TestReactionHandling:
         config = make_config()
         connector = SlackConnector(config, mock_service)
         connector._message_prompts["1234567890.111111"] = (
-            "alpha", "C99999:1234567890.000000", "What is Python?"
+            "alpha",
+            "C99999:1234567890.000000",
+            "What is Python?",
         )
         connector._app = AsyncMock()
         connector._app.client = AsyncMock()
@@ -812,7 +838,9 @@ class TestReactionHandling:
         config = make_config()
         connector = SlackConnector(config, mock_service)
         connector._message_prompts["1234567890.111111"] = (
-            "alpha", "C99999:1234567890.000000", "What is Python?"
+            "alpha",
+            "C99999:1234567890.000000",
+            "What is Python?",
         )
 
         event = {
@@ -839,7 +867,9 @@ class TestFileUpload:
 
         connector = SlackConnector(config, mock_service)
         connector._bot_user_id = "UBOTID"
-        connector._channel_cache["C99999"] = ChannelConfig(instance="alpha", name="test")
+        connector._channel_cache["C99999"] = ChannelConfig(
+            instance="alpha", name="test"
+        )
         connector._cache_timestamps["C99999"] = time.time()
 
         event = {
@@ -859,7 +889,9 @@ class TestFileUpload:
             ],
         }
 
-        with patch.object(connector, "_download_slack_file", new_callable=AsyncMock) as mock_dl:
+        with patch.object(
+            connector, "_download_slack_file", new_callable=AsyncMock
+        ) as mock_dl:
             mock_dl.return_value = tmp_path / "report.pdf"
             await connector._handle_message(event, AsyncMock())
 
@@ -879,7 +911,9 @@ class TestFileUpload:
 
         connector = SlackConnector(config, mock_service)
         connector._bot_user_id = "UBOTID"
-        connector._channel_cache["C99999"] = ChannelConfig(instance="alpha", name="test")
+        connector._channel_cache["C99999"] = ChannelConfig(
+            instance="alpha", name="test"
+        )
         connector._cache_timestamps["C99999"] = time.time()
 
         event = {
@@ -898,7 +932,9 @@ class TestFileUpload:
             ],
         }
 
-        with patch.object(connector, "_download_slack_file", new_callable=AsyncMock) as mock_dl:
+        with patch.object(
+            connector, "_download_slack_file", new_callable=AsyncMock
+        ) as mock_dl:
             mock_dl.return_value = tmp_path / "data.csv"
             await connector._handle_message(event, AsyncMock())
 
@@ -911,7 +947,11 @@ class TestFileUpload:
         connector = SlackConnector(config, AsyncMock())
 
         result = await connector._download_slack_file(
-            {"name": "huge.zip", "size": 100 * 1024 * 1024, "url_private": "https://example.com"},
+            {
+                "name": "huge.zip",
+                "size": 100 * 1024 * 1024,
+                "url_private": "https://example.com",
+            },
             tmp_path,
         )
         assert result is None
@@ -1057,9 +1097,20 @@ class TestFriendlyToolNames:
         from hive_slack.slack import _friendly_tool_name
 
         common_tools = [
-            "read_file", "write_file", "edit_file", "bash", "glob",
-            "grep", "web_search", "web_fetch", "delegate", "todo",
-            "LSP", "python_check", "load_skill", "recipes",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "bash",
+            "glob",
+            "grep",
+            "web_search",
+            "web_fetch",
+            "delegate",
+            "todo",
+            "LSP",
+            "python_check",
+            "load_skill",
+            "recipes",
         ]
         for tool in common_tools:
             result = _friendly_tool_name(tool)
@@ -1082,20 +1133,29 @@ class TestProgressIndicators:
         connector._app.client = AsyncMock()
         connector._app.client.reactions_add = AsyncMock()
         connector._app.client.reactions_remove = AsyncMock()
-        connector._app.client.chat_postMessage = AsyncMock(return_value={"ts": "status123"})
+        connector._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "status123"}
+        )
         connector._app.client.chat_delete = AsyncMock()
 
         instance = config.get_instance("alpha")
         mock_say = AsyncMock()
 
         await connector._execute_with_progress(
-            "alpha", instance, "C99999:1234567890.000000",
-            "hello", "C99999", "1234567890.000000", "1234567890.000000", mock_say,
+            "alpha",
+            instance,
+            "C99999:1234567890.000000",
+            "hello",
+            "C99999",
+            "1234567890.000000",
+            "1234567890.000000",
+            mock_say,
         )
 
         # Check hourglass reaction was added
         connector._app.client.reactions_add.assert_any_call(
-            channel="C99999", timestamp="1234567890.000000",
+            channel="C99999",
+            timestamp="1234567890.000000",
             name="hourglass_flowing_sand",
         )
 
@@ -1111,15 +1171,23 @@ class TestProgressIndicators:
         connector._app.client = AsyncMock()
         connector._app.client.reactions_add = AsyncMock()
         connector._app.client.reactions_remove = AsyncMock()
-        connector._app.client.chat_postMessage = AsyncMock(return_value={"ts": "status123"})
+        connector._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "status123"}
+        )
         connector._app.client.chat_delete = AsyncMock()
 
         instance = config.get_instance("alpha")
         mock_say = AsyncMock()
 
         await connector._execute_with_progress(
-            "alpha", instance, "C99999:1234567890.000000",
-            "hello", "C99999", "1234567890.000000", "1234567890.000000", mock_say,
+            "alpha",
+            instance,
+            "C99999:1234567890.000000",
+            "hello",
+            "C99999",
+            "1234567890.000000",
+            "1234567890.000000",
+            mock_say,
         )
 
         # Status message posted
@@ -1139,20 +1207,29 @@ class TestProgressIndicators:
         connector._app.client = AsyncMock()
         connector._app.client.reactions_add = AsyncMock()
         connector._app.client.reactions_remove = AsyncMock()
-        connector._app.client.chat_postMessage = AsyncMock(return_value={"ts": "status123"})
+        connector._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "status123"}
+        )
         connector._app.client.chat_delete = AsyncMock()
 
         instance = config.get_instance("alpha")
         mock_say = AsyncMock()
 
         await connector._execute_with_progress(
-            "alpha", instance, "C99999:1234567890.000000",
-            "hello", "C99999", "1234567890.000000", "1234567890.000000", mock_say,
+            "alpha",
+            instance,
+            "C99999:1234567890.000000",
+            "hello",
+            "C99999",
+            "1234567890.000000",
+            "1234567890.000000",
+            mock_say,
         )
 
         # Status message deleted
         connector._app.client.chat_delete.assert_called_once_with(
-            channel="C99999", ts="status123",
+            channel="C99999",
+            ts="status123",
         )
 
     @pytest.mark.asyncio
@@ -1167,20 +1244,29 @@ class TestProgressIndicators:
         connector._app.client = AsyncMock()
         connector._app.client.reactions_add = AsyncMock()
         connector._app.client.reactions_remove = AsyncMock()
-        connector._app.client.chat_postMessage = AsyncMock(return_value={"ts": "status123"})
+        connector._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "status123"}
+        )
         connector._app.client.chat_delete = AsyncMock()
 
         instance = config.get_instance("alpha")
         mock_say = AsyncMock()
 
         await connector._execute_with_progress(
-            "alpha", instance, "C99999:1234567890.000000",
-            "hello", "C99999", "1234567890.000000", "1234567890.000000", mock_say,
+            "alpha",
+            instance,
+            "C99999:1234567890.000000",
+            "hello",
+            "C99999",
+            "1234567890.000000",
+            "1234567890.000000",
+            mock_say,
         )
 
         # Hourglass removed
         connector._app.client.reactions_remove.assert_called_once_with(
-            channel="C99999", timestamp="1234567890.000000",
+            channel="C99999",
+            timestamp="1234567890.000000",
             name="hourglass_flowing_sand",
         )
 
@@ -1196,15 +1282,23 @@ class TestProgressIndicators:
         connector._app.client = AsyncMock()
         connector._app.client.reactions_add = AsyncMock()
         connector._app.client.reactions_remove = AsyncMock()
-        connector._app.client.chat_postMessage = AsyncMock(return_value={"ts": "status123"})
+        connector._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "status123"}
+        )
         connector._app.client.chat_delete = AsyncMock()
 
         instance = config.get_instance("alpha")
         mock_say = AsyncMock()
 
         await connector._execute_with_progress(
-            "alpha", instance, "C99999:1234567890.000000",
-            "hello", "C99999", "1234567890.000000", "1234567890.000000", mock_say,
+            "alpha",
+            instance,
+            "C99999:1234567890.000000",
+            "hello",
+            "C99999",
+            "1234567890.000000",
+            "1234567890.000000",
+            mock_say,
         )
 
         mock_say.assert_called_once()
@@ -1225,7 +1319,9 @@ class TestProgressIndicators:
         connector._app.client = AsyncMock()
         connector._app.client.reactions_add = AsyncMock()
         connector._app.client.reactions_remove = AsyncMock()
-        connector._app.client.chat_postMessage = AsyncMock(return_value={"ts": "status123"})
+        connector._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "status123"}
+        )
         connector._app.client.chat_delete = AsyncMock()
 
         instance = config.get_instance("alpha")
@@ -1233,8 +1329,14 @@ class TestProgressIndicators:
 
         conv_id = "C99999:1234567890.000000"
         await connector._execute_with_progress(
-            "alpha", instance, conv_id,
-            "hello", "C99999", "1234567890.000000", "1234567890.000000", mock_say,
+            "alpha",
+            instance,
+            conv_id,
+            "hello",
+            "C99999",
+            "1234567890.000000",
+            "1234567890.000000",
+            mock_say,
         )
 
         # Active execution should be cleared
@@ -1252,7 +1354,9 @@ class TestProgressIndicators:
         connector._app.client = AsyncMock()
         connector._app.client.reactions_add = AsyncMock()
         connector._app.client.reactions_remove = AsyncMock()
-        connector._app.client.chat_postMessage = AsyncMock(return_value={"ts": "status123"})
+        connector._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "status123"}
+        )
         connector._app.client.chat_delete = AsyncMock()
 
         instance = config.get_instance("alpha")
@@ -1260,8 +1364,14 @@ class TestProgressIndicators:
 
         conv_id = "C99999:1234567890.000000"
         await connector._execute_with_progress(
-            "alpha", instance, conv_id,
-            "hello", "C99999", "1234567890.000000", "1234567890.000000", mock_say,
+            "alpha",
+            instance,
+            conv_id,
+            "hello",
+            "C99999",
+            "1234567890.000000",
+            "1234567890.000000",
+            mock_say,
         )
 
         # Status message deleted on error
@@ -1279,20 +1389,27 @@ class TestMessageQueuing:
     """Test message queuing when conversation is busy."""
 
     @pytest.mark.asyncio
-    async def test_active_execution_queues_messages(self):
-        """Messages to a busy conversation are queued, not executed."""
+    @pytest.mark.asyncio
+    async def test_active_execution_injects_or_queues_messages(self):
+        """Messages to a busy conversation are injected or queued, not executed."""
         mock_service = AsyncMock()
+        # inject_message returns True (injection succeeded)
+        mock_service.inject_message = MagicMock(return_value=True)
         config = make_config()
         connector = SlackConnector(config, mock_service)
         connector._bot_user_id = "UBOTID"
-        connector._channel_cache["C99999"] = ChannelConfig(instance="alpha", name="test")
+        connector._channel_cache["C99999"] = ChannelConfig(
+            instance="alpha", name="test"
+        )
         connector._cache_timestamps["C99999"] = time.time()
 
         # Simulate an active execution
         conv_id = "C99999:1234567890.000000"
         connector._active_executions[conv_id] = {
-            "status_ts": "status123", "channel": "C99999",
-            "thread_ts": "1234567890.000000", "instance_name": "alpha",
+            "status_ts": "status123",
+            "channel": "C99999",
+            "thread_ts": "1234567890.000000",
+            "instance_name": "alpha",
             "user_ts": "1234567890.000000",
         }
         connector._app = AsyncMock()
@@ -1311,25 +1428,67 @@ class TestMessageQueuing:
 
         # Should NOT have called execute
         mock_service.execute.assert_not_called()
-        # Should have queued the message
-        assert len(connector._message_queues.get(conv_id, [])) == 1
+        # Should have tried injection
+        mock_service.inject_message.assert_called_once()
         # Should have reacted with 📨
         connector._app.client.reactions_add.assert_called_once()
         call_kwargs = connector._app.client.reactions_add.call_args[1]
         assert call_kwargs["name"] == "incoming_envelope"
 
     @pytest.mark.asyncio
-    async def test_mention_active_execution_queues_messages(self):
-        """Mentions to a busy conversation are queued, not executed."""
+    async def test_active_execution_falls_back_to_queue(self):
+        """If injection fails, message is queued locally."""
         mock_service = AsyncMock()
+        # inject_message returns False (injection not supported)
+        mock_service.inject_message = MagicMock(return_value=False)
+        config = make_config()
+        connector = SlackConnector(config, mock_service)
+        connector._bot_user_id = "UBOTID"
+        connector._channel_cache["C99999"] = ChannelConfig(
+            instance="alpha", name="test"
+        )
+        connector._cache_timestamps["C99999"] = time.time()
+
+        conv_id = "C99999:1234567890.000000"
+        connector._active_executions[conv_id] = {
+            "status_ts": "status123",
+            "channel": "C99999",
+            "thread_ts": "1234567890.000000",
+            "instance_name": "alpha",
+            "user_ts": "1234567890.000000",
+        }
+        connector._app = AsyncMock()
+        connector._app.client = AsyncMock()
+        connector._app.client.reactions_add = AsyncMock()
+
+        event = {
+            "text": "Also check the tests",
+            "channel": "C99999",
+            "ts": "1234567890.111111",
+            "thread_ts": "1234567890.000000",
+            "user": "U67890",
+        }
+
+        await connector._handle_message(event, AsyncMock())
+
+        # Should have queued (injection failed)
+        assert len(connector._message_queues.get(conv_id, [])) == 1
+
+    @pytest.mark.asyncio
+    async def test_mention_active_execution_injects_or_queues(self):
+        """Mentions to a busy conversation are injected or queued, not executed."""
+        mock_service = AsyncMock()
+        mock_service.inject_message = MagicMock(return_value=True)
         config = make_config()
         connector = SlackConnector(config, mock_service)
 
         # Simulate an active execution
         conv_id = "C99999:1234567890.000000"
         connector._active_executions[conv_id] = {
-            "status_ts": "status123", "channel": "C99999",
-            "thread_ts": "1234567890.000000", "instance_name": "alpha",
+            "status_ts": "status123",
+            "channel": "C99999",
+            "thread_ts": "1234567890.000000",
+            "instance_name": "alpha",
             "user_ts": "1234567890.000000",
         }
         connector._app = AsyncMock()
@@ -1348,8 +1507,8 @@ class TestMessageQueuing:
 
         # Should NOT have called execute
         mock_service.execute.assert_not_called()
-        # Should have queued the message
-        assert len(connector._message_queues.get(conv_id, [])) == 1
+        # Should have tried injection
+        mock_service.inject_message.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_queued_messages_batched_after_execution(self):
@@ -1364,7 +1523,9 @@ class TestMessageQueuing:
         connector._app.client = AsyncMock()
         connector._app.client.reactions_add = AsyncMock()
         connector._app.client.reactions_remove = AsyncMock()
-        connector._app.client.chat_postMessage = AsyncMock(return_value={"ts": "status123"})
+        connector._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "status123"}
+        )
         connector._app.client.chat_delete = AsyncMock()
 
         instance = config.get_instance("alpha")
@@ -1375,8 +1536,14 @@ class TestMessageQueuing:
         connector._message_queues[conv_id] = ["also check the tests"]
 
         await connector._execute_with_progress(
-            "alpha", instance, conv_id,
-            "hello", "C99999", "1234567890.000000", "1234567890.000000", mock_say,
+            "alpha",
+            instance,
+            conv_id,
+            "hello",
+            "C99999",
+            "1234567890.000000",
+            "1234567890.000000",
+            mock_say,
         )
 
         # execute should have been called twice: once for original, once for batch
@@ -1399,7 +1566,9 @@ class TestMessageQueuing:
         connector._app.client = AsyncMock()
         connector._app.client.reactions_add = AsyncMock()
         connector._app.client.reactions_remove = AsyncMock()
-        connector._app.client.chat_postMessage = AsyncMock(return_value={"ts": "status123"})
+        connector._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "status123"}
+        )
         connector._app.client.chat_delete = AsyncMock()
 
         instance = config.get_instance("alpha")
@@ -1410,8 +1579,14 @@ class TestMessageQueuing:
         connector._message_queues[conv_id] = ["msg one", "msg two", "msg three"]
 
         await connector._execute_with_progress(
-            "alpha", instance, conv_id,
-            "hello", "C99999", "1234567890.000000", "1234567890.000000", mock_say,
+            "alpha",
+            instance,
+            conv_id,
+            "hello",
+            "C99999",
+            "1234567890.000000",
+            "1234567890.000000",
+            mock_say,
         )
 
         # The batch prompt should contain all three

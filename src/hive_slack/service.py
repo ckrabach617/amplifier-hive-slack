@@ -148,6 +148,41 @@ class InProcessSessionManager:
 
             return response
 
+    def inject_message(
+        self, instance_name: str, conversation_id: str, content: str
+    ) -> bool:
+        """Inject a user message into a running session's orchestrator.
+
+        Returns True if the message was injected, False if the session
+        doesn't exist or doesn't support injection.
+        """
+        session_key = f"{instance_name}:{conversation_id}"
+        session = self._sessions.get(session_key)
+        if session is None:
+            return False
+
+        coordinator = getattr(session, "coordinator", None)
+        if coordinator is None:
+            return False
+
+        orchestrator = (
+            coordinator.get("orchestrator") if hasattr(coordinator, "get") else None
+        )
+        if orchestrator is None:
+            return False
+
+        if hasattr(orchestrator, "inject_message"):
+            orchestrator.inject_message(content)
+            logger.info(
+                "Injected message into %s:%s: %s",
+                instance_name,
+                conversation_id,
+                content[:80],
+            )
+            return True
+
+        return False
+
     async def _get_or_create_session(self, instance_name: str, conversation_id: str):
         """Get existing session or create a new one."""
         session_key = f"{instance_name}:{conversation_id}"

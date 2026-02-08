@@ -280,7 +280,9 @@ class SlackConnector:
             parts.append(f"[DM from <@{user}>]")
         if file_descriptions:
             parts.append(file_descriptions)
-        parts.append("[To share files back, copy them to .outbox/ in your working directory]")
+        parts.append(
+            "[To share files back, copy them to .outbox/ in your working directory]"
+        )
         if text:
             parts.append(text)
         return "\n".join(parts)
@@ -328,9 +330,7 @@ class SlackConnector:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     url,
-                    headers={
-                        "Authorization": f"Bearer {self._config.slack.bot_token}"
-                    },
+                    headers={"Authorization": f"Bearer {self._config.slack.bot_token}"},
                 ) as resp:
                     if resp.status != 200:
                         logger.warning(
@@ -376,9 +376,7 @@ class SlackConnector:
                     initial_comment=f"📎 {filepath.name}",
                 )
                 filepath.unlink()
-                logger.info(
-                    "Shared %s to Slack and removed from outbox", filepath.name
-                )
+                logger.info("Shared %s to Slack and removed from outbox", filepath.name)
             except Exception:
                 logger.warning(
                     "Failed to upload %s to Slack", filepath.name, exc_info=True
@@ -597,8 +595,23 @@ class SlackConnector:
 
         # Check if this conversation is already executing
         if conversation_id in self._active_executions:
-            # Queue this message instead of executing
-            self._message_queues.setdefault(conversation_id, []).append(prompt)
+            # Try to inject into the running orchestrator (mid-execution steering)
+            exec_info = self._active_executions[conversation_id]
+            injected = (
+                self._service.inject_message(
+                    exec_info.get("instance_name", instance_name),
+                    conversation_id,
+                    prompt,
+                )
+                if hasattr(self._service, "inject_message")
+                else False
+            )
+
+            if not injected:
+                # Fallback: queue locally for batch after execution
+                self._message_queues.setdefault(conversation_id, []).append(prompt)
+
+            # Acknowledge with 📨 either way
             try:
                 await self._app.client.reactions_add(
                     channel=channel,
@@ -607,7 +620,11 @@ class SlackConnector:
                 )
             except Exception:
                 pass
-            logger.info("Queued message for busy conversation %s", conversation_id)
+            logger.info(
+                "%s message for busy conversation %s",
+                "Injected" if injected else "Queued",
+                conversation_id,
+            )
             return
 
         await self._execute_with_progress(
@@ -808,8 +825,23 @@ class SlackConnector:
 
         # Check if this conversation is already executing
         if conversation_id in self._active_executions:
-            # Queue this message instead of executing
-            self._message_queues.setdefault(conversation_id, []).append(prompt)
+            # Try to inject into the running orchestrator (mid-execution steering)
+            exec_info = self._active_executions[conversation_id]
+            injected = (
+                self._service.inject_message(
+                    exec_info.get("instance_name", instance_name),
+                    conversation_id,
+                    prompt,
+                )
+                if hasattr(self._service, "inject_message")
+                else False
+            )
+
+            if not injected:
+                # Fallback: queue locally for batch after execution
+                self._message_queues.setdefault(conversation_id, []).append(prompt)
+
+            # Acknowledge with 📨 either way
             try:
                 await self._app.client.reactions_add(
                     channel=channel,
@@ -818,7 +850,11 @@ class SlackConnector:
                 )
             except Exception:
                 pass
-            logger.info("Queued message for busy conversation %s", conversation_id)
+            logger.info(
+                "%s message for busy conversation %s",
+                "Injected" if injected else "Queued",
+                conversation_id,
+            )
             return
 
         await self._execute_with_progress(
