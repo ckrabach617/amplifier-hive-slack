@@ -30,14 +30,47 @@ class InProcessSessionManager:
 
     async def start(self) -> None:
         """Load and prepare the Amplifier bundle. Called once at startup."""
-        from amplifier_foundation import load_bundle
+        from amplifier_foundation import Bundle, load_bundle
 
         logger.info("Loading bundle: %s", self._config.instance.bundle)
         bundle = await load_bundle(self._config.instance.bundle)
 
+        # The foundation bundle has no provider — compose one in.
+        # Auto-detect from environment: prefer Anthropic, fall back to OpenAI.
+        provider = self._detect_provider()
+        if provider:
+            logger.info("Adding provider: %s (%s)", provider["module"], provider["config"]["model"])
+            provider_bundle = Bundle(
+                name="provider-overlay",
+                version="0.0.1",
+                providers=[provider],
+            )
+            bundle = bundle.compose(provider_bundle)
+        else:
+            logger.warning("No provider API key found in environment")
+
         logger.info("Preparing bundle (this may take a moment)...")
         self._prepared = await bundle.prepare()
         logger.info("Bundle ready")
+
+    @staticmethod
+    def _detect_provider() -> dict | None:
+        """Auto-detect LLM provider from environment variables."""
+        import os
+
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            return {
+                "module": "provider-anthropic",
+                "source": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
+                "config": {"model": "claude-sonnet-4-20250514"},
+            }
+        if os.environ.get("OPENAI_API_KEY"):
+            return {
+                "module": "provider-openai",
+                "source": "git+https://github.com/microsoft/amplifier-module-provider-openai@main",
+                "config": {"model": "gpt-4o"},
+            }
+        return None
 
     async def execute(
         self, instance_name: str, conversation_id: str, prompt: str

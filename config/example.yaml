@@ -1,7 +1,7 @@
 instance:
   name: alpha
   bundle: foundation
-  working_dir: ~/projects/my-project
+  working_dir: ~/amplifier-working
   persona:
     name: Alpha
     emoji: ":robot_face:"

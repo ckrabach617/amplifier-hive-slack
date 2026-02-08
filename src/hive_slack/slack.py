@@ -32,6 +32,54 @@ class SessionManager(Protocol):
     ) -> str: ...
 
 
+def markdown_to_slack(text: str) -> str:
+    """Convert standard markdown to Slack's mrkdwn format.
+
+    Key differences:
+    - **bold** → *bold*
+    - [text](url) → <url|text>
+    - # Heading → *Heading*
+    - ## Heading → *Heading*
+    - ### Heading → *Heading*
+    """
+    # Protect code blocks from transformation
+    code_blocks: list[str] = []
+
+    def _save_code_block(match: re.Match) -> str:
+        code_blocks.append(match.group(0))
+        return f"\x00CODEBLOCK{len(code_blocks) - 1}\x00"
+
+    text = re.sub(r"```[\s\S]*?```", _save_code_block, text)
+
+    # Protect inline code from transformation
+    inline_codes: list[str] = []
+
+    def _save_inline_code(match: re.Match) -> str:
+        inline_codes.append(match.group(0))
+        return f"\x00INLINE{len(inline_codes) - 1}\x00"
+
+    text = re.sub(r"`[^`]+`", _save_inline_code, text)
+
+    # Bold: **text** → *text* (but not within words)
+    text = re.sub(r"\*\*(.+?)\*\*", r"*\1*", text)
+
+    # Links: [text](url) → <url|text>
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"<\2|\1>", text)
+
+    # Headings: # Heading → *Heading*
+    text = re.sub(r"^#{1,6}\s+(.+)$", r"*\1*", text, flags=re.MULTILINE)
+
+    # Restore inline code
+    for i, code in enumerate(inline_codes):
+        text = text.replace(f"\x00INLINE{i}\x00", code)
+
+    # Restore code blocks
+    for i, block in enumerate(code_blocks):
+        text = text.replace(f"\x00CODEBLOCK{i}\x00", block)
+
+    return text
+
+
 class SlackConnector:
     """Slack Socket Mode listener + response poster.
 
@@ -76,7 +124,7 @@ class SlackConnector:
             )
 
             await say(
-                text=response,
+                text=markdown_to_slack(response),
                 thread_ts=thread_ts,
                 username=self._config.instance.persona.name,
                 icon_emoji=self._config.instance.persona.emoji,
