@@ -35,31 +35,33 @@ class SessionManager(Protocol):
 def markdown_to_slack(text: str) -> str:
     """Convert standard markdown to Slack's mrkdwn format.
 
-    Key differences:
-    - **bold** → *bold*
-    - [text](url) → <url|text>
-    - # Heading → *Heading*
-    - ## Heading → *Heading*
-    - ### Heading → *Heading*
+    Slack's mrkdwn differs from standard markdown:
+    - *bold* instead of **bold**
+    - <url|text> instead of [text](url)
+    - No heading syntax (use bold instead)
+    - No table syntax (render as monospace code block)
+    - No horizontal rules (render as unicode line)
+
+    Order of operations matters: tables and code blocks are extracted
+    first so their content isn't mangled by inline formatting conversions.
     """
-    # Protect code blocks from transformation
-    code_blocks: list[str] = []
+    protected: list[str] = []
 
-    def _save_code_block(match: re.Match) -> str:
-        code_blocks.append(match.group(0))
-        return f"\x00CODEBLOCK{len(code_blocks) - 1}\x00"
+    def _protect(content: str) -> str:
+        protected.append(content)
+        return f"\x00PROTECTED{len(protected) - 1}\x00"
 
-    text = re.sub(r"```[\s\S]*?```", _save_code_block, text)
+    # 1. Protect existing code blocks
+    text = re.sub(r"```[\s\S]*?```", lambda m: _protect(m.group(0)), text)
 
-    # Protect inline code from transformation
-    inline_codes: list[str] = []
+    # 2. Protect inline code
+    text = re.sub(r"`[^`]+`", lambda m: _protect(m.group(0)), text)
 
-    def _save_inline_code(match: re.Match) -> str:
-        inline_codes.append(match.group(0))
-        return f"\x00INLINE{len(inline_codes) - 1}\x00"
+    # 3. Extract and convert tables BEFORE inline formatting
+    #    (so **bold** in cells becomes plain text in the code block)
+    text = _convert_tables(text, _protect)
 
-    text = re.sub(r"`[^`]+`", _save_inline_code, text)
-
+    # 4. Now safe to do inline formatting (tables are protected)
     # Bold: **text** → *text*
     text = re.sub(r"\*\*(.+?)\*\*", r"*\1*", text)
 
@@ -69,28 +71,30 @@ def markdown_to_slack(text: str) -> str:
     # Headings: # Heading → *Heading*
     text = re.sub(r"^#{1,6}\s+(.+)$", r"*\1*", text, flags=re.MULTILINE)
 
-    # Horizontal rules: ---, ***, ___ → ─── visual separator
-    text = re.sub(r"^[-*_]{3,}\s*$", "───────────────────────────────", text, flags=re.MULTILINE)
+    # Horizontal rules: ---, ***, ___ → visual separator with spacing
+    text = re.sub(
+        r"^[-*_]{3,}\s*$",
+        "\n───────────────────────────────\n",
+        text,
+        flags=re.MULTILINE,
+    )
 
-    # Tables: convert to aligned monospace using code block
-    text = _convert_tables(text)
+    # 5. Restore all protected content
+    for i, content in enumerate(protected):
+        text = text.replace(f"\x00PROTECTED{i}\x00", content)
 
-    # Restore inline code
-    for i, code in enumerate(inline_codes):
-        text = text.replace(f"\x00INLINE{i}\x00", code)
+    # Clean up excessive blank lines (3+ → 2)
+    text = re.sub(r"\n{3,}", "\n\n", text)
 
-    # Restore code blocks
-    for i, block in enumerate(code_blocks):
-        text = text.replace(f"\x00CODEBLOCK{i}\x00", block)
-
-    return text
+    return text.strip()
 
 
-def _convert_tables(text: str) -> str:
-    """Convert markdown tables to monospace code blocks for Slack.
+def _convert_tables(text: str, protect_fn) -> str:
+    """Find markdown tables, convert to code blocks, protect them.
 
-    Slack has no table support, so we render as fixed-width text
-    inside a code block to preserve alignment.
+    Tables are converted to fixed-width monospace inside code blocks.
+    Markdown formatting is stripped from cell content (bold, italic, links)
+    since code blocks render literally.
     """
     lines = text.split("\n")
     result: list[str] = []
@@ -109,29 +113,42 @@ def _convert_tables(text: str) -> str:
                 table_lines.append(line)
         else:
             if in_table:
-                result.append(_render_table_as_code(table_lines))
+                result.append(protect_fn(_render_table_as_code(table_lines)))
                 table_lines = []
                 in_table = False
             result.append(line)
 
     if in_table:
-        result.append(_render_table_as_code(table_lines))
+        result.append(protect_fn(_render_table_as_code(table_lines)))
 
     return "\n".join(result)
 
 
+def _strip_markdown_inline(text: str) -> str:
+    """Strip markdown inline formatting from text (for use in code blocks)."""
+    # **bold** or __bold__ → bold
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"__(.+?)__", r"\1", text)
+    # *italic* or _italic_ → italic
+    text = re.sub(r"(?<!\w)\*(.+?)\*(?!\w)", r"\1", text)
+    text = re.sub(r"(?<!\w)_(.+?)_(?!\w)", r"\1", text)
+    # [text](url) → text
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    # `code` → code
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    return text
+
+
 def _render_table_as_code(rows: list[str]) -> str:
-    """Render table rows as a fixed-width code block."""
-    # Parse cells from each row
+    """Render table rows as a fixed-width code block with a header separator."""
     parsed: list[list[str]] = []
     for row in rows:
-        cells = [c.strip() for c in row.strip().strip("|").split("|")]
+        cells = [_strip_markdown_inline(c.strip()) for c in row.strip().strip("|").split("|")]
         parsed.append(cells)
 
     if not parsed:
         return ""
 
-    # Calculate column widths
     num_cols = max(len(r) for r in parsed)
     col_widths = [0] * num_cols
     for row in parsed:
@@ -139,14 +156,17 @@ def _render_table_as_code(rows: list[str]) -> str:
             if i < num_cols:
                 col_widths[i] = max(col_widths[i], len(cell))
 
-    # Format rows with padding
     formatted: list[str] = []
-    for row in parsed:
+    for row_idx, row in enumerate(parsed):
         cells = []
         for i in range(num_cols):
             cell = row[i] if i < len(row) else ""
             cells.append(cell.ljust(col_widths[i]))
         formatted.append("  ".join(cells))
+        # Add separator after header row
+        if row_idx == 0 and len(parsed) > 1:
+            sep = "  ".join("─" * w for w in col_widths)
+            formatted.append(sep)
 
     return "```\n" + "\n".join(formatted) + "\n```"
 
