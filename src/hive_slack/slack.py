@@ -60,7 +60,7 @@ def markdown_to_slack(text: str) -> str:
 
     text = re.sub(r"`[^`]+`", _save_inline_code, text)
 
-    # Bold: **text** → *text* (but not within words)
+    # Bold: **text** → *text*
     text = re.sub(r"\*\*(.+?)\*\*", r"*\1*", text)
 
     # Links: [text](url) → <url|text>
@@ -68,6 +68,12 @@ def markdown_to_slack(text: str) -> str:
 
     # Headings: # Heading → *Heading*
     text = re.sub(r"^#{1,6}\s+(.+)$", r"*\1*", text, flags=re.MULTILINE)
+
+    # Horizontal rules: ---, ***, ___ → ─── visual separator
+    text = re.sub(r"^[-*_]{3,}\s*$", "───────────────────────────────", text, flags=re.MULTILINE)
+
+    # Tables: convert to aligned monospace using code block
+    text = _convert_tables(text)
 
     # Restore inline code
     for i, code in enumerate(inline_codes):
@@ -78,6 +84,71 @@ def markdown_to_slack(text: str) -> str:
         text = text.replace(f"\x00CODEBLOCK{i}\x00", block)
 
     return text
+
+
+def _convert_tables(text: str) -> str:
+    """Convert markdown tables to monospace code blocks for Slack.
+
+    Slack has no table support, so we render as fixed-width text
+    inside a code block to preserve alignment.
+    """
+    lines = text.split("\n")
+    result: list[str] = []
+    table_lines: list[str] = []
+    in_table = False
+
+    for line in lines:
+        is_table_row = bool(re.match(r"^\s*\|.*\|\s*$", line))
+        is_separator = bool(re.match(r"^\s*\|[-:\s|]+\|\s*$", line))
+
+        if is_table_row:
+            if not in_table:
+                in_table = True
+                table_lines = []
+            if not is_separator:
+                table_lines.append(line)
+        else:
+            if in_table:
+                result.append(_render_table_as_code(table_lines))
+                table_lines = []
+                in_table = False
+            result.append(line)
+
+    if in_table:
+        result.append(_render_table_as_code(table_lines))
+
+    return "\n".join(result)
+
+
+def _render_table_as_code(rows: list[str]) -> str:
+    """Render table rows as a fixed-width code block."""
+    # Parse cells from each row
+    parsed: list[list[str]] = []
+    for row in rows:
+        cells = [c.strip() for c in row.strip().strip("|").split("|")]
+        parsed.append(cells)
+
+    if not parsed:
+        return ""
+
+    # Calculate column widths
+    num_cols = max(len(r) for r in parsed)
+    col_widths = [0] * num_cols
+    for row in parsed:
+        for i, cell in enumerate(row):
+            if i < num_cols:
+                col_widths[i] = max(col_widths[i], len(cell))
+
+    # Format rows with padding
+    formatted: list[str] = []
+    for row in parsed:
+        cells = []
+        for i in range(num_cols):
+            cell = row[i] if i < len(row) else ""
+            cells.append(cell.ljust(col_widths[i]))
+        formatted.append("  ".join(cells))
+
+    return "```\n" + "\n".join(formatted) + "\n```"
 
 
 class SlackConnector:
