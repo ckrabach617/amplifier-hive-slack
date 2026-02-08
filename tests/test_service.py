@@ -310,3 +310,89 @@ class TestSessionPersistence:
 
         # Restore permissions for cleanup
         read_only_dir.chmod(0o755)
+
+
+class TestOnProgressCallback:
+    """Test on_progress callback support in execute()."""
+
+    @pytest.mark.asyncio
+    async def test_execute_calls_on_progress(self):
+        """on_progress callback is called with executing and complete events."""
+        manager = InProcessSessionManager(make_config())
+
+        mock_session = AsyncMock()
+        mock_session.execute.return_value = "response"
+        mock_session.cleanup = AsyncMock()
+        mock_prepared = MagicMock()
+        mock_prepared.create_session = AsyncMock(return_value=mock_session)
+        manager._prepared = {"foundation": mock_prepared}
+
+        progress_events = []
+
+        async def on_progress(event_type, data):
+            progress_events.append((event_type, data))
+
+        await manager.execute("alpha", "conv-1", "hello", on_progress=on_progress)
+
+        assert len(progress_events) == 2
+        assert progress_events[0][0] == "executing"
+        assert progress_events[1][0] == "complete"
+
+    @pytest.mark.asyncio
+    async def test_execute_without_on_progress_still_works(self):
+        """Existing calls without on_progress continue to work."""
+        manager = InProcessSessionManager(make_config())
+
+        mock_session = AsyncMock()
+        mock_session.execute.return_value = "response"
+        mock_session.cleanup = AsyncMock()
+        mock_prepared = MagicMock()
+        mock_prepared.create_session = AsyncMock(return_value=mock_session)
+        manager._prepared = {"foundation": mock_prepared}
+
+        result = await manager.execute("alpha", "conv-1", "hello")
+        assert result == "response"
+
+    @pytest.mark.asyncio
+    async def test_on_progress_receives_error_on_failure(self):
+        """on_progress receives error event when execution fails."""
+        manager = InProcessSessionManager(make_config())
+
+        mock_session = AsyncMock()
+        mock_session.execute.side_effect = RuntimeError("boom")
+        mock_session.cleanup = AsyncMock()
+        mock_prepared = MagicMock()
+        mock_prepared.create_session = AsyncMock(return_value=mock_session)
+        manager._prepared = {"foundation": mock_prepared}
+
+        progress_events = []
+
+        async def on_progress(event_type, data):
+            progress_events.append((event_type, data))
+
+        with pytest.raises(RuntimeError, match="boom"):
+            await manager.execute("alpha", "conv-1", "hello", on_progress=on_progress)
+
+        assert progress_events[0][0] == "executing"
+        assert progress_events[1][0] == "error"
+
+    @pytest.mark.asyncio
+    async def test_on_progress_callback_error_does_not_break_execute(self):
+        """If on_progress callback raises, execute() still works."""
+        manager = InProcessSessionManager(make_config())
+
+        mock_session = AsyncMock()
+        mock_session.execute.return_value = "response"
+        mock_session.cleanup = AsyncMock()
+        mock_prepared = MagicMock()
+        mock_prepared.create_session = AsyncMock(return_value=mock_session)
+        manager._prepared = {"foundation": mock_prepared}
+
+        async def bad_callback(event_type, data):
+            raise ValueError("callback crashed")
+
+        # Should not raise despite callback error
+        result = await manager.execute(
+            "alpha", "conv-1", "hello", on_progress=bad_callback
+        )
+        assert result == "response"

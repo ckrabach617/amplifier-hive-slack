@@ -17,7 +17,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Awaitable, Callable, Protocol
 
 from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
@@ -31,7 +31,11 @@ class SessionManager(Protocol):
     """Service boundary — same signature as future gRPC SessionService.Execute."""
 
     async def execute(
-        self, instance_name: str, conversation_id: str, prompt: str
+        self,
+        instance_name: str,
+        conversation_id: str,
+        prompt: str,
+        on_progress: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> str: ...
 
 
@@ -195,6 +199,27 @@ class ChannelConfig:
     name: str = ""  # Channel name for context enrichment
 
 
+def _friendly_tool_name(tool_name: str) -> str:
+    """Convert tool module names to human-friendly descriptions."""
+    friendly = {
+        "read_file": "Reading files",
+        "write_file": "Writing files",
+        "edit_file": "Editing files",
+        "bash": "Running command",
+        "glob": "Searching files",
+        "grep": "Searching content",
+        "web_search": "Searching the web",
+        "web_fetch": "Fetching web page",
+        "delegate": "Delegating to agent",
+        "todo": "Managing tasks",
+        "LSP": "Analyzing code",
+        "python_check": "Checking code quality",
+        "load_skill": "Loading knowledge",
+        "recipes": "Running recipe",
+    }
+    return friendly.get(tool_name, f"Working ({tool_name})")
+
+
 class SlackConnector:
     """Slack Socket Mode listener + response poster.
 
@@ -224,6 +249,13 @@ class SlackConnector:
         # Track prompts that generated bot responses (for reaction commands)
         # message_ts → (instance_name, conversation_id, prompt)
         self._message_prompts: dict[str, tuple[str, str, str]] = {}
+
+        # Active execution tracking for progress indicators
+        # conversation_id → {"status_ts", "user_ts", "channel", "thread_ts", "instance_name"}
+        self._active_executions: dict[str, dict] = {}
+        # Message queuing for conversations with active executions
+        # conversation_id → [queued prompts]
+        self._message_queues: dict[str, list[str]] = {}
 
         # Register event handlers
         self._app.event("app_mention")(self._handle_mention)
@@ -352,6 +384,160 @@ class SlackConnector:
                     "Failed to upload %s to Slack", filepath.name, exc_info=True
                 )
 
+    async def _execute_with_progress(
+        self,
+        instance_name: str,
+        instance,  # InstanceConfig
+        conversation_id: str,
+        prompt: str,
+        channel: str,
+        thread_ts: str,
+        user_ts: str,
+        say,
+    ) -> None:
+        """Execute a prompt with progress indicators and message queuing."""
+        # React with ⏳ on the user's message
+        try:
+            await self._app.client.reactions_add(
+                channel=channel,
+                timestamp=user_ts,
+                name="hourglass_flowing_sand",
+            )
+        except Exception:
+            pass  # Best effort
+
+        # Post editable status message (bot's own identity, NOT persona)
+        status_msg = None
+        try:
+            result = await self._app.client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts,
+                text="\u2699\ufe0f Working...",
+            )
+            status_msg = result.get("ts")
+        except Exception:
+            logger.debug("Could not post status message")
+
+        # Track this execution
+        self._active_executions[conversation_id] = {
+            "status_ts": status_msg,
+            "user_ts": user_ts,
+            "channel": channel,
+            "thread_ts": thread_ts,
+            "instance_name": instance_name,
+        }
+
+        # Progress callback for service.execute()
+        async def on_progress(event_type: str, data: dict) -> None:
+            if not status_msg:
+                return
+            text = None
+            if event_type == "executing":
+                text = "\u2699\ufe0f Working..."
+            elif event_type == "tool:pre":
+                tool = data.get("tool", "")
+                friendly = _friendly_tool_name(tool)
+                text = f"\u2699\ufe0f {friendly}..."
+            elif event_type in ("complete", "error"):
+                return  # We handle completion below
+
+            if text:
+                queued = len(self._message_queues.get(conversation_id, []))
+                if queued:
+                    text += f" ({queued} message{'s' if queued != 1 else ''} queued)"
+                try:
+                    await self._app.client.chat_update(
+                        channel=channel,
+                        ts=status_msg,
+                        text=text,
+                    )
+                except Exception:
+                    pass  # Best effort, may hit rate limits
+
+        try:
+            # Execute
+            response = await self._service.execute(
+                instance_name,
+                conversation_id,
+                prompt,
+                on_progress=on_progress,
+            )
+
+            # Delete status message
+            if status_msg:
+                try:
+                    await self._app.client.chat_delete(
+                        channel=channel,
+                        ts=status_msg,
+                    )
+                except Exception:
+                    pass
+
+            # Process outbox (file sharing)
+            working_dir = Path(instance.working_dir).expanduser()
+            await self._process_outbox(working_dir, channel, thread_ts, instance)
+
+            # Post final response with persona
+            result = await say(
+                text=markdown_to_slack(response),
+                thread_ts=thread_ts,
+                username=instance.persona.name,
+                icon_emoji=instance.persona.emoji,
+            )
+            self._track_prompt(result, instance_name, conversation_id, prompt)
+
+        except Exception:
+            logger.exception("Error in execution for %s", conversation_id)
+            # Delete status message on error too
+            if status_msg:
+                try:
+                    await self._app.client.chat_delete(
+                        channel=channel,
+                        ts=status_msg,
+                    )
+                except Exception:
+                    pass
+            await say(
+                text="Something's not working on my end. Try again?",
+                thread_ts=thread_ts,
+                username=instance.persona.name,
+                icon_emoji=instance.persona.emoji,
+            )
+        finally:
+            # Remove ⏳ reaction
+            try:
+                await self._app.client.reactions_remove(
+                    channel=channel,
+                    timestamp=user_ts,
+                    name="hourglass_flowing_sand",
+                )
+            except Exception:
+                pass
+
+            # Clear active execution
+            self._active_executions.pop(conversation_id, None)
+
+            # Process queued messages
+            queued = self._message_queues.pop(conversation_id, [])
+            if queued:
+                combined = "\n".join(f"- {m}" for m in queued)
+                batch_prompt = (
+                    "[You completed a previous task. The user sent additional "
+                    "messages while you were working. Please address these:]\n"
+                    f"{combined}"
+                )
+                # Recursively execute the batch (will get its own status message)
+                await self._execute_with_progress(
+                    instance_name,
+                    instance,
+                    conversation_id,
+                    batch_prompt,
+                    channel,
+                    thread_ts,
+                    user_ts,
+                    say,
+                )
+
     async def _handle_mention(self, event: dict, say) -> None:
         """Handle @mention events — the core message flow."""
         # Mark this message as handled so _handle_message skips it
@@ -409,32 +595,31 @@ class SlackConnector:
             prompt[:100],
         )
 
-        try:
-            response = await self._service.execute(
-                instance_name,
-                conversation_id,
-                prompt,
-            )
+        # Check if this conversation is already executing
+        if conversation_id in self._active_executions:
+            # Queue this message instead of executing
+            self._message_queues.setdefault(conversation_id, []).append(prompt)
+            try:
+                await self._app.client.reactions_add(
+                    channel=channel,
+                    timestamp=event.get("ts", ""),
+                    name="incoming_envelope",
+                )
+            except Exception:
+                pass
+            logger.info("Queued message for busy conversation %s", conversation_id)
+            return
 
-            # Check outbox for files to share back
-            working_dir = Path(instance.working_dir).expanduser()
-            await self._process_outbox(working_dir, channel, thread_ts, instance)
-
-            result = await say(
-                text=markdown_to_slack(response),
-                thread_ts=thread_ts,
-                username=instance.persona.name,
-                icon_emoji=instance.persona.emoji,
-            )
-            self._track_prompt(result, instance_name, conversation_id, prompt)
-        except Exception:
-            logger.exception("Error handling mention in %s", conversation_id)
-            await say(
-                text="Something's not working on my end. Try again?",
-                thread_ts=thread_ts,
-                username=instance.persona.name,
-                icon_emoji=instance.persona.emoji,
-            )
+        await self._execute_with_progress(
+            instance_name,
+            instance,
+            conversation_id,
+            prompt,
+            channel,
+            thread_ts,
+            event.get("ts", ""),
+            say,
+        )
 
     @staticmethod
     def _strip_mention(text: str) -> str:
@@ -621,32 +806,31 @@ class SlackConnector:
             prompt[:100],
         )
 
-        try:
-            response = await self._service.execute(
-                instance_name,
-                conversation_id,
-                prompt,
-            )
+        # Check if this conversation is already executing
+        if conversation_id in self._active_executions:
+            # Queue this message instead of executing
+            self._message_queues.setdefault(conversation_id, []).append(prompt)
+            try:
+                await self._app.client.reactions_add(
+                    channel=channel,
+                    timestamp=event.get("ts", ""),
+                    name="incoming_envelope",
+                )
+            except Exception:
+                pass
+            logger.info("Queued message for busy conversation %s", conversation_id)
+            return
 
-            # Check outbox for files to share back
-            working_dir = Path(instance.working_dir).expanduser()
-            await self._process_outbox(working_dir, channel, thread_ts, instance)
-
-            result = await say(
-                text=markdown_to_slack(response),
-                thread_ts=thread_ts,
-                username=instance.persona.name,
-                icon_emoji=instance.persona.emoji,
-            )
-            self._track_prompt(result, instance_name, conversation_id, prompt)
-        except Exception:
-            logger.exception("Error handling message in %s", conversation_id)
-            await say(
-                text="Something's not working on my end. Try again?",
-                thread_ts=thread_ts,
-                username=instance.persona.name,
-                icon_emoji=instance.persona.emoji,
-            )
+        await self._execute_with_progress(
+            instance_name,
+            instance,
+            conversation_id,
+            prompt,
+            channel,
+            thread_ts,
+            event.get("ts", ""),
+            say,
+        )
 
     def _track_prompt(
         self,

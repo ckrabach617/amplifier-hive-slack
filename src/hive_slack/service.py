@@ -11,6 +11,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Awaitable, Callable
 
 from hive_slack.config import HiveSlackConfig
 
@@ -90,12 +91,21 @@ class InProcessSessionManager:
         return None
 
     async def execute(
-        self, instance_name: str, conversation_id: str, prompt: str
+        self,
+        instance_name: str,
+        conversation_id: str,
+        prompt: str,
+        on_progress: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> str:
-        """Execute a prompt in the session for this (instance, conversation).
+        """Execute a prompt with optional progress callback.
 
         Creates a new session if one doesn't exist.
         Serializes execution per-session (sessions are not reentrant).
+
+        The on_progress callback, if provided, is called with:
+            ("executing", {"prompt": <first 100 chars>}) — before execution
+            ("complete", {"status": "success"})           — after success
+            ("error", {"error": "execution failed"})      — after failure
         """
         if not self._prepared:
             raise RuntimeError("SessionManager not started — call start() first")
@@ -110,7 +120,28 @@ class InProcessSessionManager:
                 conversation_id,
                 prompt[:80],
             )
-            response = await session.execute(prompt)
+
+            if on_progress:
+                try:
+                    await on_progress("executing", {"prompt": prompt[:100]})
+                except Exception:
+                    pass
+
+            try:
+                response = await session.execute(prompt)
+            except Exception:
+                if on_progress:
+                    try:
+                        await on_progress("error", {"error": "execution failed"})
+                    except Exception:
+                        pass
+                raise
+
+            if on_progress:
+                try:
+                    await on_progress("complete", {"status": "success"})
+                except Exception:
+                    pass
 
             # Persist transcript after each turn (best-effort)
             await self._save_transcript(instance_name, conversation_id, session)
