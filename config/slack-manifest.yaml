@@ -20,6 +20,8 @@ oauth_config:
       - im:read
       - reactions:read
       - reactions:write
+      - files:read
+      - files:write
 
 settings:
   event_subscriptions:

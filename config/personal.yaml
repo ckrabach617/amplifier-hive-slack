@@ -1,0 +1,26 @@
+# Personal assistant configuration
+# For a single user with their own Slack workspace
+#
+# Setup:
+#   1. Create a Slack workspace and app (see README.md)
+#   2. Copy tokens to .env
+#   3. Set working_dir to your preferred location:
+#      - A local folder (simplest)
+#      - A subfolder inside your OneDrive/Google Drive sync folder
+#        (existing cloud sync handles everything automatically)
+#   4. Run: python -m hive_slack.main config/personal.yaml
+
+instances:
+  assistant:
+    bundle: amplifier-dev
+    working_dir: ~/Documents/Amplifier    # Change this to your preferred location
+    persona:
+      name: Amplifier
+      emoji: ":zap:"
+
+defaults:
+  instance: assistant
+
+slack:
+  app_token: ${SLACK_APP_TOKEN}
+  bot_token: ${SLACK_BOT_TOKEN}

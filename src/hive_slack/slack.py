@@ -16,6 +16,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from slack_bolt.async_app import AsyncApp
@@ -232,7 +233,12 @@ class SlackConnector:
         self._app.event("reaction_added")(self._handle_reaction)
 
     def _build_prompt(
-        self, text: str, user: str, channel: str, channel_name: str = ""
+        self,
+        text: str,
+        user: str,
+        channel: str,
+        channel_name: str = "",
+        file_descriptions: str | None = None,
     ) -> str:
         """Enrich the raw message with context about who/where."""
         parts = []
@@ -240,8 +246,111 @@ class SlackConnector:
             parts.append(f"[From <@{user}> in #{channel_name}]")
         else:
             parts.append(f"[DM from <@{user}>]")
-        parts.append(text)
+        if file_descriptions:
+            parts.append(file_descriptions)
+        parts.append("[To share files back, copy them to .outbox/ in your working directory]")
+        if text:
+            parts.append(text)
         return "\n".join(parts)
+
+    async def _download_slack_file(
+        self, file_info: dict, working_dir: Path
+    ) -> Path | None:
+        """Download a single file from Slack to the instance's working directory.
+
+        Returns the local path where the file was saved, or None on failure.
+        Max file size: 50MB.
+        """
+        MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+
+        url = file_info.get("url_private")
+        name = file_info.get("name", "unknown")
+        size = file_info.get("size", 0)
+
+        if not url:
+            logger.warning("File %s has no url_private, skipping", name)
+            return None
+
+        if size > MAX_FILE_SIZE:
+            logger.warning("File %s too large (%d bytes), skipping", name, size)
+            return None
+
+        # Sanitize filename
+        safe_name = re.sub(r"[^\w\-.]", "_", name)
+        if not safe_name:
+            safe_name = "uploaded_file"
+
+        # Handle filename conflicts
+        dest = working_dir / safe_name
+        if dest.exists():
+            stem = dest.stem
+            suffix = dest.suffix
+            counter = 1
+            while dest.exists():
+                dest = working_dir / f"{stem}_{counter}{suffix}"
+                counter += 1
+
+        try:
+            import aiohttp
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {self._config.slack.bot_token}"
+                    },
+                ) as resp:
+                    if resp.status != 200:
+                        logger.warning(
+                            "Failed to download %s: HTTP %d", name, resp.status
+                        )
+                        return None
+                    content = await resp.read()
+                    dest.write_bytes(content)
+                    logger.info(
+                        "Downloaded %s (%d bytes) to %s", name, len(content), dest
+                    )
+                    return dest
+        except Exception:
+            logger.exception("Error downloading file %s", name)
+            return None
+
+    async def _process_outbox(
+        self,
+        working_dir: Path,
+        channel: str,
+        thread_ts: str,
+        instance: object,
+    ) -> None:
+        """Check .outbox/ for files to share back to Slack.
+
+        Files are uploaded to the Slack thread and deleted from .outbox/ on success.
+        Failures are logged but don't crash the handler.
+        """
+        outbox = working_dir / ".outbox"
+        if not outbox.exists() or not outbox.is_dir():
+            return
+
+        for filepath in sorted(outbox.iterdir()):
+            if filepath.name.startswith(".") or filepath.is_dir():
+                continue
+
+            try:
+                await self._app.client.files_upload_v2(
+                    channel=channel,
+                    thread_ts=thread_ts,
+                    file=str(filepath),
+                    title=filepath.name,
+                    initial_comment=f"📎 {filepath.name}",
+                )
+                filepath.unlink()
+                logger.info(
+                    "Shared %s to Slack and removed from outbox", filepath.name
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to upload %s to Slack", filepath.name, exc_info=True
+                )
 
     async def _handle_mention(self, event: dict, say) -> None:
         """Handle @mention events — the core message flow."""
@@ -268,9 +377,29 @@ class SlackConnector:
 
         conversation_id = f"{channel}:{thread_ts}"
 
+        # Download any uploaded files (mentions can include files too)
+        files = event.get("files", [])
+        file_descriptions = None
+        if files:
+            working_dir = Path(instance.working_dir).expanduser()
+            working_dir.mkdir(parents=True, exist_ok=True)
+            desc_lines = []
+            for file_info in files:
+                saved_path = await self._download_slack_file(file_info, working_dir)
+                if saved_path:
+                    desc_lines.append(
+                        f"  {file_info.get('name', 'file')} ({file_info.get('size', 0)} bytes) → ./{saved_path.name}"
+                    )
+            if desc_lines:
+                file_descriptions = (
+                    "[User uploaded files:\n" + "\n".join(desc_lines) + "]"
+                )
+
         # Get channel name for context enrichment
         channel_config = await self._get_channel_config(channel)
-        prompt = self._build_prompt(prompt, user, channel, channel_config.name)
+        prompt = self._build_prompt(
+            prompt, user, channel, channel_config.name, file_descriptions
+        )
 
         logger.info(
             "Mention from %s → %s in %s: %s",
@@ -286,6 +415,10 @@ class SlackConnector:
                 conversation_id,
                 prompt,
             )
+
+            # Check outbox for files to share back
+            working_dir = Path(instance.working_dir).expanduser()
+            await self._process_outbox(working_dir, channel, thread_ts, instance)
 
             result = await say(
                 text=markdown_to_slack(response),
@@ -381,12 +514,12 @@ class SlackConnector:
         )
 
         # Skip bot messages (prevent loops!)
-        if event.get("bot_id") or event.get("subtype"):
-            logger.debug(
-                "Skipping: bot_id=%s subtype=%s",
-                event.get("bot_id"),
-                event.get("subtype"),
-            )
+        if event.get("bot_id"):
+            logger.debug("Skipping: bot_id=%s", event.get("bot_id"))
+            return
+        subtype = event.get("subtype")
+        if subtype and subtype != "file_share":
+            logger.debug("Skipping: subtype=%s", subtype)
             return
 
         # Skip messages from our own bot user (belt + suspenders for loop prevention)
@@ -406,7 +539,8 @@ class SlackConnector:
             return
 
         text = event.get("text", "").strip()
-        if not text:
+        files = event.get("files", [])
+        if not text and not files:
             return
 
         channel = event.get("channel", "")
@@ -456,8 +590,28 @@ class SlackConnector:
             logger.warning("Unknown instance '%s' in channel config", instance_name)
             return
 
+        # Download any uploaded files
+        file_descriptions = None
+        if files:
+            working_dir = Path(instance.working_dir).expanduser()
+            working_dir.mkdir(parents=True, exist_ok=True)
+            desc_lines = []
+            for file_info in files:
+                saved_path = await self._download_slack_file(file_info, working_dir)
+                if saved_path:
+                    size = file_info.get("size", 0)
+                    desc_lines.append(
+                        f"  {file_info.get('name', 'file')} ({size} bytes) → ./{saved_path.name}"
+                    )
+            if desc_lines:
+                file_descriptions = (
+                    "[User uploaded files:\n" + "\n".join(desc_lines) + "]"
+                )
+
         # Enrich prompt with context
-        prompt = self._build_prompt(prompt, user, channel, channel_name)
+        prompt = self._build_prompt(
+            prompt, user, channel, channel_name, file_descriptions
+        )
 
         logger.info(
             "Message from %s → %s in %s: %s",
@@ -473,6 +627,10 @@ class SlackConnector:
                 conversation_id,
                 prompt,
             )
+
+            # Check outbox for files to share back
+            working_dir = Path(instance.working_dir).expanduser()
+            await self._process_outbox(working_dir, channel, thread_ts, instance)
 
             result = await say(
                 text=markdown_to_slack(response),

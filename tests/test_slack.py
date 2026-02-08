@@ -3,7 +3,8 @@
 import time
 
 import pytest
-from unittest.mock import AsyncMock
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from hive_slack.config import HiveSlackConfig, InstanceConfig, PersonaConfig, SlackConfig
 from hive_slack.slack import ChannelConfig, SlackConnector
@@ -822,3 +823,214 @@ class TestReactionHandling:
 
         await connector._handle_reaction(event, AsyncMock())
         mock_service.execute.assert_not_called()
+
+
+class TestFileUpload:
+    """Test file download from Slack to workspace."""
+
+    @pytest.mark.asyncio
+    async def test_file_share_message_downloads_file(self, tmp_path):
+        """File upload events trigger download to working directory."""
+        mock_service = AsyncMock()
+        mock_service.execute.return_value = "I see your file"
+
+        config = make_config()
+        config.instances["alpha"].working_dir = str(tmp_path)
+
+        connector = SlackConnector(config, mock_service)
+        connector._bot_user_id = "UBOTID"
+        connector._channel_cache["C99999"] = ChannelConfig(instance="alpha", name="test")
+        connector._cache_timestamps["C99999"] = time.time()
+
+        event = {
+            "text": "check this out",
+            "subtype": "file_share",
+            "channel": "C99999",
+            "ts": "1234567890.123456",
+            "user": "U67890",
+            "files": [
+                {
+                    "id": "F123",
+                    "name": "report.pdf",
+                    "size": 1024,
+                    "url_private": "https://files.slack.com/files-pri/T123/report.pdf",
+                    "mimetype": "application/pdf",
+                }
+            ],
+        }
+
+        with patch.object(connector, "_download_slack_file", new_callable=AsyncMock) as mock_dl:
+            mock_dl.return_value = tmp_path / "report.pdf"
+            await connector._handle_message(event, AsyncMock())
+
+        mock_service.execute.assert_called_once()
+        prompt = mock_service.execute.call_args[0][2]
+        assert "report.pdf" in prompt
+        assert "uploaded" in prompt.lower()
+
+    @pytest.mark.asyncio
+    async def test_file_only_message_not_skipped(self, tmp_path):
+        """Messages with files but no text are processed."""
+        mock_service = AsyncMock()
+        mock_service.execute.return_value = "Got your file"
+
+        config = make_config()
+        config.instances["alpha"].working_dir = str(tmp_path)
+
+        connector = SlackConnector(config, mock_service)
+        connector._bot_user_id = "UBOTID"
+        connector._channel_cache["C99999"] = ChannelConfig(instance="alpha", name="test")
+        connector._cache_timestamps["C99999"] = time.time()
+
+        event = {
+            "text": "",
+            "subtype": "file_share",
+            "channel": "C99999",
+            "ts": "1234567890.123456",
+            "user": "U67890",
+            "files": [
+                {
+                    "id": "F123",
+                    "name": "data.csv",
+                    "size": 512,
+                    "url_private": "https://files.slack.com/files-pri/T123/data.csv",
+                }
+            ],
+        }
+
+        with patch.object(connector, "_download_slack_file", new_callable=AsyncMock) as mock_dl:
+            mock_dl.return_value = tmp_path / "data.csv"
+            await connector._handle_message(event, AsyncMock())
+
+        mock_service.execute.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_download_skips_oversized_files(self, tmp_path):
+        """Files over 50MB are skipped."""
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+
+        result = await connector._download_slack_file(
+            {"name": "huge.zip", "size": 100 * 1024 * 1024, "url_private": "https://example.com"},
+            tmp_path,
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_download_skips_missing_url(self, tmp_path):
+        """Files without url_private are skipped."""
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+
+        result = await connector._download_slack_file(
+            {"name": "nourl.txt", "size": 100},
+            tmp_path,
+        )
+        assert result is None
+
+
+class TestFileOutbox:
+    """Test .outbox/ file sharing back to Slack."""
+
+    @pytest.mark.asyncio
+    async def test_process_outbox_uploads_and_deletes(self, tmp_path):
+        """Files in .outbox/ are uploaded to Slack and removed."""
+        outbox = tmp_path / ".outbox"
+        outbox.mkdir()
+        test_file = outbox / "result.csv"
+        test_file.write_text("a,b,c\n1,2,3")
+
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        connector._app = AsyncMock()
+        connector._app.client = AsyncMock()
+        connector._app.client.files_upload_v2 = AsyncMock()
+
+        await connector._process_outbox(
+            tmp_path,
+            "C99999",
+            "1234567890.123456",
+            config.instances["alpha"],
+        )
+
+        connector._app.client.files_upload_v2.assert_called_once()
+        assert not test_file.exists()
+
+    @pytest.mark.asyncio
+    async def test_process_outbox_noop_when_empty(self, tmp_path):
+        """No-op when .outbox/ is empty or doesn't exist."""
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+
+        await connector._process_outbox(
+            tmp_path,
+            "C99999",
+            "1234567890.123456",
+            config.instances["alpha"],
+        )
+        # Should not crash
+
+    @pytest.mark.asyncio
+    async def test_process_outbox_skips_dotfiles(self, tmp_path):
+        """Dotfiles in .outbox/ are ignored."""
+        outbox = tmp_path / ".outbox"
+        outbox.mkdir()
+        (outbox / ".gitkeep").write_text("")
+        (outbox / "real_file.txt").write_text("hello")
+
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        connector._app = AsyncMock()
+        connector._app.client = AsyncMock()
+        connector._app.client.files_upload_v2 = AsyncMock()
+
+        await connector._process_outbox(
+            tmp_path,
+            "C99999",
+            "1234567890.123456",
+            config.instances["alpha"],
+        )
+
+        connector._app.client.files_upload_v2.assert_called_once()
+        call_kwargs = connector._app.client.files_upload_v2.call_args[1]
+        assert "real_file.txt" in call_kwargs["file"]
+
+
+class TestBuildPromptWithFiles:
+    """Test _build_prompt with file descriptions."""
+
+    @pytest.mark.asyncio
+    async def test_includes_file_descriptions(self):
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        result = connector._build_prompt(
+            "check this",
+            "U123",
+            "C456",
+            "coding",
+            file_descriptions="[User uploaded files:\n  report.pdf (1024 bytes) → ./report.pdf]",
+        )
+        assert "report.pdf" in result
+        assert "uploaded" in result.lower()
+        assert "check this" in result
+
+    @pytest.mark.asyncio
+    async def test_includes_outbox_instruction(self):
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        result = connector._build_prompt("hello", "U123", "C456", "coding")
+        assert ".outbox/" in result
+
+    @pytest.mark.asyncio
+    async def test_handles_empty_text_with_files(self):
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        result = connector._build_prompt(
+            "",
+            "U123",
+            "C456",
+            "coding",
+            file_descriptions="[User uploaded: data.csv]",
+        )
+        assert "data.csv" in result
+        assert ".outbox/" in result
