@@ -1,0 +1,11 @@
+instance:
+  name: alpha
+  bundle: foundation
+  working_dir: ~/projects/my-project
+  persona:
+    name: Alpha
+    emoji: ":robot_face:"
+
+slack:
+  app_token: ${SLACK_APP_TOKEN}
+  bot_token: ${SLACK_BOT_TOKEN}
