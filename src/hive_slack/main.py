@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 async def run(config_path: str) -> None:
     """Load config, start service, connect to Slack, run until interrupted."""
     logging.basicConfig(
-        level=logging.INFO,
+        level=getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO),
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )

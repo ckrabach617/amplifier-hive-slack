@@ -312,12 +312,20 @@ class SlackConnector:
         Routing is determined by [key:value] directives in the channel topic.
         Unconfigured channels are ignored (backward compatible — @mention still works).
         """
+        logger.debug(
+            "Message event received: channel=%s user=%s bot_id=%s subtype=%s text=%s",
+            event.get("channel"), event.get("user"), event.get("bot_id"),
+            event.get("subtype"), (event.get("text", ""))[:50],
+        )
+
         # Skip bot messages (prevent loops!)
         if event.get("bot_id") or event.get("subtype"):
+            logger.debug("Skipping: bot_id=%s subtype=%s", event.get("bot_id"), event.get("subtype"))
             return
 
         # Skip if this is an @mention (handled by _handle_mention)
         if self._bot_user_id and f"<@{self._bot_user_id}>" in event.get("text", ""):
+            logger.debug("Skipping: contains bot @mention (handled by _handle_mention)")
             return
 
         text = event.get("text", "").strip()
