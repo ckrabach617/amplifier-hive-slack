@@ -24,34 +24,47 @@ class InProcessSessionManager:
 
     def __init__(self, config: HiveSlackConfig) -> None:
         self._config = config
-        self._prepared = None  # PreparedBundle, set during start()
-        self._sessions: dict[str, object] = {}  # conversation_id → AmplifierSession
+        self._prepared: dict[str, object] = {}  # bundle_name → PreparedBundle
+        self._sessions: dict[str, object] = {}  # "instance:conv_id" → AmplifierSession
         self._locks: dict[str, asyncio.Lock] = {}
 
     async def start(self) -> None:
-        """Load and prepare the Amplifier bundle. Called once at startup."""
+        """Load and prepare bundles for all instances. Called once at startup."""
         from amplifier_foundation import Bundle, load_bundle
 
-        logger.info("Loading bundle: %s", self._config.instance.bundle)
-        bundle = await load_bundle(self._config.instance.bundle)
+        # Collect unique bundles to avoid loading the same one twice
+        bundles_needed: dict[str, str] = {}  # bundle_name → first instance using it
+        for inst in self._config.instances.values():
+            if inst.bundle not in bundles_needed:
+                bundles_needed[inst.bundle] = inst.name
 
-        # The foundation bundle has no provider — compose one in.
-        # Auto-detect from environment: prefer Anthropic, fall back to OpenAI.
         provider = self._detect_provider()
-        if provider:
-            logger.info("Adding provider: %s (%s)", provider["module"], provider["config"]["model"])
-            provider_bundle = Bundle(
-                name="provider-overlay",
-                version="0.0.1",
-                providers=[provider],
-            )
-            bundle = bundle.compose(provider_bundle)
-        else:
-            logger.warning("No provider API key found in environment")
 
-        logger.info("Preparing bundle (this may take a moment)...")
-        self._prepared = await bundle.prepare()
-        logger.info("Bundle ready")
+        for bundle_name, first_instance in bundles_needed.items():
+            logger.info("Loading bundle '%s' (used by %s)", bundle_name, first_instance)
+            bundle = await load_bundle(bundle_name)
+
+            if provider:
+                logger.info(
+                    "Adding provider: %s (%s)",
+                    provider["module"],
+                    provider["config"]["model"],
+                )
+                provider_bundle = Bundle(
+                    name="provider-overlay",
+                    version="0.0.1",
+                    providers=[provider],
+                )
+                bundle = bundle.compose(provider_bundle)
+
+            logger.info("Preparing bundle '%s'...", bundle_name)
+            self._prepared[bundle_name] = await bundle.prepare()
+
+        logger.info(
+            "All bundles ready (%d bundle(s) for %d instance(s))",
+            len(self._prepared),
+            len(self._config.instances),
+        )
 
     @staticmethod
     def _detect_provider() -> dict | None:
@@ -75,48 +88,63 @@ class InProcessSessionManager:
     async def execute(
         self, instance_name: str, conversation_id: str, prompt: str
     ) -> str:
-        """Execute a prompt in the session for this conversation.
+        """Execute a prompt in the session for this (instance, conversation).
 
-        Creates a new session if one doesn't exist for the conversation_id.
+        Creates a new session if one doesn't exist.
         Serializes execution per-session (sessions are not reentrant).
         """
-        if self._prepared is None:
+        if not self._prepared:
             raise RuntimeError("SessionManager not started — call start() first")
 
-        lock = self._locks.setdefault(conversation_id, asyncio.Lock())
+        session_key = f"{instance_name}:{conversation_id}"
+        lock = self._locks.setdefault(session_key, asyncio.Lock())
         async with lock:
-            session = await self._get_or_create_session(conversation_id)
+            session = await self._get_or_create_session(instance_name, conversation_id)
             logger.info(
-                "Executing in session %s for %s: %s",
-                conversation_id,
+                "Executing for %s in %s: %s",
                 instance_name,
+                conversation_id,
                 prompt[:80],
             )
             response = await session.execute(prompt)
             return response
 
-    async def _get_or_create_session(self, conversation_id: str):
-        """Get existing session or create a new one for this conversation."""
-        if conversation_id not in self._sessions:
-            working_dir = Path(self._config.instance.working_dir).expanduser()
+    async def _get_or_create_session(self, instance_name: str, conversation_id: str):
+        """Get existing session or create a new one."""
+        session_key = f"{instance_name}:{conversation_id}"
+        if session_key not in self._sessions:
+            instance = self._config.get_instance(instance_name)
+            prepared = self._prepared.get(instance.bundle)
+            if prepared is None:
+                raise RuntimeError(
+                    f"No prepared bundle for '{instance.bundle}' "
+                    f"(instance '{instance_name}')"
+                )
+
+            working_dir = Path(instance.working_dir).expanduser()
             working_dir.mkdir(parents=True, exist_ok=True)
 
-            logger.info("Creating new session for conversation: %s", conversation_id)
-            session = await self._prepared.create_session(
-                session_cwd=working_dir,
+            logger.info(
+                "Creating session for %s in %s (bundle=%s, cwd=%s)",
+                instance_name,
+                conversation_id,
+                instance.bundle,
+                working_dir,
             )
-            self._sessions[conversation_id] = session
-        return self._sessions[conversation_id]
+            session = await prepared.create_session(session_cwd=working_dir)
+            self._sessions[session_key] = session
+        return self._sessions[session_key]
 
     async def stop(self) -> None:
         """Cleanup all sessions."""
         logger.info(
-            "Stopping session manager, cleaning up %d sessions", len(self._sessions)
+            "Stopping session manager, cleaning up %d sessions",
+            len(self._sessions),
         )
-        for conv_id, session in list(self._sessions.items()):
+        for key, session in list(self._sessions.items()):
             try:
                 await session.cleanup()
             except Exception:
-                logger.exception("Error cleaning up session %s", conv_id)
+                logger.exception("Error cleaning up session %s", key)
         self._sessions.clear()
         self._locks.clear()

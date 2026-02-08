@@ -25,15 +25,24 @@ async def run(config_path: str) -> None:
     logger.info("Loading config from %s", config_path)
     config = HiveSlackConfig.from_yaml(config_path)
 
-    # Start the service (loads Amplifier bundle — may take 30-60 seconds)
+    # Start the service (loads Amplifier bundles)
     service = InProcessSessionManager(config)
     await service.start()
-    logger.info("Instance '%s' ready", config.instance.name)
+
+    for name, inst in config.instances.items():
+        logger.info(
+            "Instance '%s' ready (%s %s, bundle=%s)",
+            name,
+            inst.persona.name,
+            inst.persona.emoji,
+            inst.bundle,
+        )
+    logger.info("Default instance: %s", config.default_instance)
 
     # Create the Slack connector
     connector = SlackConnector(config, service)
 
-    # Graceful shutdown on Ctrl+C / SIGTERM
+    # Graceful shutdown
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
 
@@ -44,16 +53,14 @@ async def run(config_path: str) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, handle_signal)
 
-    logger.info(
-        "Connecting to Slack as '%s' %s",
-        config.instance.persona.name,
-        config.instance.persona.emoji,
+    instance_names = ", ".join(
+        f"{inst.persona.name} {inst.persona.emoji}"
+        for inst in config.instances.values()
     )
+    logger.info("Connecting to Slack with instances: %s", instance_names)
 
     try:
-        # Start Socket Mode in a background task
         asyncio.create_task(connector.start())
-        # Wait for shutdown signal
         await stop_event.wait()
     except Exception:
         logger.exception("Unexpected error")

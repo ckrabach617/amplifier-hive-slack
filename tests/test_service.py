@@ -5,18 +5,26 @@ import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from hive_slack.config import HiveSlackConfig, InstanceConfig, PersonaConfig, SlackConfig
+from hive_slack.config import (
+    HiveSlackConfig,
+    InstanceConfig,
+    PersonaConfig,
+    SlackConfig,
+)
 from hive_slack.service import InProcessSessionManager
 
 
 def make_config(working_dir: str = "/tmp/test-workspace") -> HiveSlackConfig:
     return HiveSlackConfig(
-        instance=InstanceConfig(
-            name="alpha",
-            bundle="foundation",
-            working_dir=working_dir,
-            persona=PersonaConfig(name="Alpha", emoji=":robot_face:"),
-        ),
+        instances={
+            "alpha": InstanceConfig(
+                name="alpha",
+                bundle="foundation",
+                working_dir=working_dir,
+                persona=PersonaConfig(name="Alpha", emoji=":robot_face:"),
+            ),
+        },
+        default_instance="alpha",
         slack=SlackConfig(
             app_token="xapp-test",
             bot_token="xoxb-test",
@@ -46,7 +54,7 @@ class TestInProcessSessionManager:
         mock_prepared = MagicMock()
         mock_prepared.create_session = AsyncMock(return_value=mock_session)
 
-        manager._prepared = mock_prepared
+        manager._prepared = {"foundation": mock_prepared}
 
         result = await manager.execute("alpha", "conv-1", "hello")
         assert result == "I am a response"
@@ -63,7 +71,7 @@ class TestInProcessSessionManager:
         mock_prepared = MagicMock()
         mock_prepared.create_session = AsyncMock(return_value=mock_session)
 
-        manager._prepared = mock_prepared
+        manager._prepared = {"foundation": mock_prepared}
 
         await manager.execute("alpha", "conv-1", "first")
         await manager.execute("alpha", "conv-1", "second")
@@ -91,7 +99,7 @@ class TestInProcessSessionManager:
             side_effect=[mock_session_a, mock_session_b]
         )
 
-        manager._prepared = mock_prepared
+        manager._prepared = {"foundation": mock_prepared}
 
         result_a = await manager.execute("alpha", "conv-A", "hello A")
         result_b = await manager.execute("alpha", "conv-B", "hello B")
@@ -112,7 +120,7 @@ class TestInProcessSessionManager:
         mock_prepared = MagicMock()
         mock_prepared.create_session = AsyncMock(return_value=mock_session)
 
-        manager._prepared = mock_prepared
+        manager._prepared = {"foundation": mock_prepared}
 
         await manager.execute("alpha", "conv-1", "hello")
         await manager.stop()
@@ -141,7 +149,7 @@ class TestInProcessSessionManager:
         mock_prepared = MagicMock()
         mock_prepared.create_session = AsyncMock(return_value=mock_session)
 
-        manager._prepared = mock_prepared
+        manager._prepared = {"foundation": mock_prepared}
 
         # Fire two concurrent executions for the same conversation
         results = await asyncio.gather(
@@ -154,3 +162,48 @@ class TestInProcessSessionManager:
         assert execution_order[1] == "end:first"
         assert execution_order[2] == "start:second"
         assert execution_order[3] == "end:second"
+
+    @pytest.mark.asyncio
+    async def test_routes_to_correct_instance_bundle(self):
+        """Different instances use their own working directories."""
+        config = HiveSlackConfig(
+            instances={
+                "alpha": InstanceConfig(
+                    name="alpha",
+                    bundle="foundation",
+                    working_dir="/tmp/alpha",
+                    persona=PersonaConfig(name="Alpha", emoji=":robot_face:"),
+                ),
+                "beta": InstanceConfig(
+                    name="beta",
+                    bundle="foundation",
+                    working_dir="/tmp/beta",
+                    persona=PersonaConfig(name="Beta", emoji=":gear:"),
+                ),
+            },
+            default_instance="alpha",
+            slack=SlackConfig(app_token="xapp-test", bot_token="xoxb-test"),
+        )
+        manager = InProcessSessionManager(config)
+
+        mock_session_alpha = AsyncMock()
+        mock_session_alpha.execute.return_value = "alpha response"
+        mock_session_alpha.cleanup = AsyncMock()
+
+        mock_session_beta = AsyncMock()
+        mock_session_beta.execute.return_value = "beta response"
+        mock_session_beta.cleanup = AsyncMock()
+
+        mock_prepared = MagicMock()
+        mock_prepared.create_session = AsyncMock(
+            side_effect=[mock_session_alpha, mock_session_beta]
+        )
+        manager._prepared = {"foundation": mock_prepared}
+
+        result_a = await manager.execute("alpha", "conv-1", "hello from alpha")
+        result_b = await manager.execute("beta", "conv-1", "hello from beta")
+
+        assert result_a == "alpha response"
+        assert result_b == "beta response"
+        # Two separate sessions created (different instance names, same conv_id)
+        assert mock_prepared.create_session.call_count == 2

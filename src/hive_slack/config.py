@@ -41,12 +41,29 @@ class SlackConfig:
 class HiveSlackConfig:
     """Top-level configuration for the Hive Slack connector."""
 
-    instance: InstanceConfig
+    instances: dict[str, InstanceConfig]
+    default_instance: str
     slack: SlackConfig
+
+    def get_instance(self, name: str) -> InstanceConfig:
+        """Get instance config by name. Raises KeyError if not found."""
+        if name not in self.instances:
+            available = ", ".join(sorted(self.instances.keys()))
+            raise KeyError(f"Unknown instance '{name}'. Available: {available}")
+        return self.instances[name]
+
+    @property
+    def instance_names(self) -> list[str]:
+        """List of all registered instance names."""
+        return list(self.instances.keys())
 
     @classmethod
     def from_yaml(cls, path: str) -> HiveSlackConfig:
         """Load configuration from a YAML file.
+
+        Supports two formats:
+        - Multi-instance (preferred): instances: {alpha: {...}, beta: {...}}
+        - Single-instance (legacy): instance: {name: alpha, ...}
 
         Supports ${ENV_VAR} substitution in string values.
         Expands ~ in working_dir paths.
@@ -56,22 +73,27 @@ class HiveSlackConfig:
 
         resolved = cast(dict[str, Any], _substitute_env_vars(raw))
 
-        instance_data = cast(dict[str, Any], resolved["instance"])
-        persona_data = cast(dict[str, Any], instance_data.get("persona", {}))
+        # Parse instances — support both multi and single format
+        instances: dict[str, InstanceConfig] = {}
+        default_instance: str = ""
 
-        working_dir = instance_data["working_dir"]
-        if working_dir.startswith("~"):
-            working_dir = str(Path(working_dir).expanduser())
+        if "instances" in resolved:
+            # Multi-instance format
+            instances_data = cast(dict[str, Any], resolved["instances"])
+            for inst_name, inst_data in instances_data.items():
+                instances[inst_name] = _parse_instance(inst_name, inst_data)
+            # Default from config or first instance
+            defaults = cast(dict[str, Any], resolved.get("defaults", {}))
+            default_instance = defaults.get("instance", next(iter(instances)))
+        elif "instance" in resolved:
+            # Legacy single-instance format
+            inst_data = cast(dict[str, Any], resolved["instance"])
+            inst_name = inst_data["name"]
+            instances[inst_name] = _parse_instance(inst_name, inst_data)
+            default_instance = inst_name
 
-        instance = InstanceConfig(
-            name=instance_data["name"],
-            bundle=instance_data["bundle"],
-            working_dir=working_dir,
-            persona=PersonaConfig(
-                name=persona_data.get("name", instance_data["name"].title()),
-                emoji=persona_data.get("emoji", ":robot_face:"),
-            ),
-        )
+        if not instances:
+            raise ValueError("Config must define at least one instance")
 
         slack_data = cast(dict[str, Any], resolved["slack"])
         slack = SlackConfig(
@@ -79,7 +101,30 @@ class HiveSlackConfig:
             bot_token=slack_data["bot_token"],
         )
 
-        return cls(instance=instance, slack=slack)
+        return cls(
+            instances=instances,
+            default_instance=default_instance,
+            slack=slack,
+        )
+
+
+def _parse_instance(name: str, data: dict[str, Any]) -> InstanceConfig:
+    """Parse a single instance config from dict."""
+    persona_data = cast(dict[str, Any], data.get("persona", {}))
+
+    working_dir = data.get("working_dir", f"~/amplifier-working-{name}")
+    if working_dir.startswith("~"):
+        working_dir = str(Path(working_dir).expanduser())
+
+    return InstanceConfig(
+        name=name,
+        bundle=data.get("bundle", "foundation"),
+        working_dir=working_dir,
+        persona=PersonaConfig(
+            name=persona_data.get("name", name.title()),
+            emoji=persona_data.get("emoji", ":robot_face:"),
+        ),
+    )
 
 
 _ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")

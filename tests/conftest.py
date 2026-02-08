@@ -12,14 +12,23 @@ from hive_slack.config import (
 
 @pytest.fixture
 def sample_config() -> HiveSlackConfig:
-    """A fully populated test config (no env vars needed)."""
+    """A fully populated multi-instance test config."""
     return HiveSlackConfig(
-        instance=InstanceConfig(
-            name="alpha",
-            bundle="foundation",
-            working_dir="/tmp/test-workspace",
-            persona=PersonaConfig(name="Alpha", emoji=":robot_face:"),
-        ),
+        instances={
+            "alpha": InstanceConfig(
+                name="alpha",
+                bundle="foundation",
+                working_dir="/tmp/test-alpha",
+                persona=PersonaConfig(name="Alpha", emoji=":robot_face:"),
+            ),
+            "beta": InstanceConfig(
+                name="beta",
+                bundle="foundation",
+                working_dir="/tmp/test-beta",
+                persona=PersonaConfig(name="Beta", emoji=":gear:"),
+            ),
+        },
+        default_instance="alpha",
         slack=SlackConfig(
             app_token="xapp-test-token",
             bot_token="xoxb-test-token",

@@ -199,45 +199,74 @@ class SlackConnector:
             return
 
         channel = event.get("channel", "")
-        # thread_ts is set when replying in a thread; ts is this message's timestamp
         thread_ts = event.get("thread_ts") or event.get("ts", "")
         user = event.get("user", "unknown")
+
+        # Route to instance: parse /name prefix or use default
+        instance_name, prompt = self._parse_instance_prefix(
+            text, self._config.instance_names, self._config.default_instance
+        )
+        instance = self._config.get_instance(instance_name)
 
         conversation_id = f"{channel}:{thread_ts}"
 
         logger.info(
-            "Mention from %s in %s: %s",
+            "Mention from %s → %s in %s: %s",
             user,
+            instance_name,
             conversation_id,
-            text[:100],
+            prompt[:100],
         )
 
         try:
             response = await self._service.execute(
-                self._config.instance.name,
+                instance_name,
                 conversation_id,
-                text,
+                prompt,
             )
 
             await say(
                 text=markdown_to_slack(response),
                 thread_ts=thread_ts,
-                username=self._config.instance.persona.name,
-                icon_emoji=self._config.instance.persona.emoji,
+                username=instance.persona.name,
+                icon_emoji=instance.persona.emoji,
             )
         except Exception:
             logger.exception("Error handling mention in %s", conversation_id)
             await say(
                 text="Sorry, I encountered an error processing your request.",
                 thread_ts=thread_ts,
-                username=self._config.instance.persona.name,
-                icon_emoji=self._config.instance.persona.emoji,
+                username=instance.persona.name,
+                icon_emoji=instance.persona.emoji,
             )
 
     @staticmethod
     def _strip_mention(text: str) -> str:
         """Remove <@U12345> mention prefix from message text."""
         return re.sub(r"^<@[A-Z0-9]+>\s*", "", text).strip()
+
+    @staticmethod
+    def _parse_instance_prefix(
+        text: str,
+        known_instances: list[str],
+        default: str,
+    ) -> tuple[str, str]:
+        """Parse /instance-name prefix from message text.
+
+        Returns (instance_name, remaining_text).
+
+        Examples:
+            "/alpha review this code" → ("alpha", "review this code")
+            "/beta what do you think" → ("beta", "what do you think")
+            "just a question" → (default, "just a question")
+            "/unknown hello" → (default, "/unknown hello")  # unknown name kept as text
+        """
+        match = re.match(r"^/(\w+)\s+(.*)", text, re.DOTALL)
+        if match:
+            candidate = match.group(1).lower()
+            if candidate in known_instances:
+                return candidate, match.group(2).strip()
+        return default, text
 
     async def start(self) -> None:
         """Start the Socket Mode handler (blocks until stopped)."""

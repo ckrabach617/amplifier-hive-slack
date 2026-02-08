@@ -1,10 +1,20 @@
-instance:
-  name: alpha
-  bundle: foundation
-  working_dir: ~/amplifier-working
-  persona:
-    name: Alpha
-    emoji: ":robot_face:"
+instances:
+  alpha:
+    bundle: foundation
+    working_dir: ~/amplifier-working
+    persona:
+      name: Alpha
+      emoji: ":robot_face:"
+  
+  beta:
+    bundle: foundation
+    working_dir: ~/amplifier-working-beta
+    persona:
+      name: Beta
+      emoji: ":gear:"
+
+defaults:
+  instance: alpha
 
 slack:
   app_token: ${SLACK_APP_TOKEN}

@@ -9,12 +9,21 @@ from hive_slack.slack import SlackConnector
 
 def make_config() -> HiveSlackConfig:
     return HiveSlackConfig(
-        instance=InstanceConfig(
-            name="alpha",
-            bundle="foundation",
-            working_dir="/tmp/test",
-            persona=PersonaConfig(name="Alpha", emoji=":robot_face:"),
-        ),
+        instances={
+            "alpha": InstanceConfig(
+                name="alpha",
+                bundle="foundation",
+                working_dir="/tmp/test",
+                persona=PersonaConfig(name="Alpha", emoji=":robot_face:"),
+            ),
+            "beta": InstanceConfig(
+                name="beta",
+                bundle="foundation",
+                working_dir="/tmp/test-beta",
+                persona=PersonaConfig(name="Beta", emoji=":gear:"),
+            ),
+        },
+        default_instance="alpha",
         slack=SlackConfig(
             app_token="xapp-test",
             bot_token="xoxb-test",
@@ -168,3 +177,97 @@ class TestHandleMention:
         await connector._handle_mention(event, AsyncMock())
 
         mock_service.execute.assert_not_called()
+
+
+class TestInstanceRouting:
+    """Test /instance-name routing from mentions."""
+
+    def test_parses_known_instance_prefix(self):
+        name, text = SlackConnector._parse_instance_prefix(
+            "/alpha review this code", ["alpha", "beta"], "alpha"
+        )
+        assert name == "alpha"
+        assert text == "review this code"
+
+    def test_parses_different_instance(self):
+        name, text = SlackConnector._parse_instance_prefix(
+            "/beta what do you think?", ["alpha", "beta"], "alpha"
+        )
+        assert name == "beta"
+        assert text == "what do you think?"
+
+    def test_falls_back_to_default_for_no_prefix(self):
+        name, text = SlackConnector._parse_instance_prefix(
+            "just a question", ["alpha", "beta"], "alpha"
+        )
+        assert name == "alpha"
+        assert text == "just a question"
+
+    def test_falls_back_for_unknown_prefix(self):
+        """Unknown /name is treated as regular text, not a routing prefix."""
+        name, text = SlackConnector._parse_instance_prefix(
+            "/unknown hello", ["alpha", "beta"], "alpha"
+        )
+        assert name == "alpha"
+        assert text == "/unknown hello"
+
+    def test_case_insensitive_matching(self):
+        name, text = SlackConnector._parse_instance_prefix(
+            "/Alpha review this", ["alpha", "beta"], "alpha"
+        )
+        assert name == "alpha"
+        assert text == "review this"
+
+    @pytest.mark.asyncio
+    async def test_mention_routes_to_specified_instance(self):
+        """@bot /beta question routes to beta with beta's persona."""
+        mock_service = AsyncMock()
+        mock_service.execute.return_value = "Beta's response"
+
+        config = make_config()
+        connector = SlackConnector(config, mock_service)
+
+        mock_say = AsyncMock()
+        event = {
+            "text": "<@UBOT123> /beta what do you think?",
+            "channel": "C99999",
+            "ts": "1234567890.123456",
+            "user": "U67890",
+        }
+
+        await connector._handle_mention(event, mock_say)
+
+        # Executed as beta
+        mock_service.execute.assert_called_once_with(
+            "beta", "C99999:1234567890.123456", "what do you think?"
+        )
+
+        # Posted with beta's persona
+        call_kwargs = mock_say.call_args[1]
+        assert call_kwargs["username"] == "Beta"
+        assert call_kwargs["icon_emoji"] == ":gear:"
+
+    @pytest.mark.asyncio
+    async def test_mention_without_prefix_uses_default(self):
+        """@bot question (no /name) routes to default instance."""
+        mock_service = AsyncMock()
+        mock_service.execute.return_value = "Alpha's response"
+
+        config = make_config()
+        connector = SlackConnector(config, mock_service)
+
+        mock_say = AsyncMock()
+        event = {
+            "text": "<@UBOT123> what time is it?",
+            "channel": "C99999",
+            "ts": "1234567890.123456",
+            "user": "U67890",
+        }
+
+        await connector._handle_mention(event, mock_say)
+
+        mock_service.execute.assert_called_once_with(
+            "alpha", "C99999:1234567890.123456", "what time is it?"
+        )
+        call_kwargs = mock_say.call_args[1]
+        assert call_kwargs["username"] == "Alpha"
