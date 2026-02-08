@@ -162,6 +162,9 @@ class InProcessSessionManager:
                 return
 
             messages = context.get_messages()
+            # get_messages may be async (returns coroutine) — handle both
+            if asyncio.iscoroutine(messages):
+                messages = await messages
             if not messages:
                 return
 
