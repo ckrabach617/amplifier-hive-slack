@@ -62,6 +62,21 @@ class InProcessSessionManager:
                 )
                 bundle = bundle.compose(provider_bundle)
 
+            # Override orchestrator with loop-interactive (supports mid-execution injection)
+            orchestrator_overlay = Bundle(
+                name="orchestrator-overlay",
+                version="0.0.1",
+                session={
+                    "orchestrator": {
+                        "module": "loop-interactive",
+                        "source": "git+https://github.com/bkrabach/amplifier-module-loop-interactive@main",
+                        "config": {"extended_thinking": True},
+                    },
+                },
+            )
+            bundle = bundle.compose(orchestrator_overlay)
+            logger.info("Using loop-interactive orchestrator (injection support)")
+
             logger.info("Preparing bundle '%s'...", bundle_name)
             self._prepared[bundle_name] = await bundle.prepare()
 
