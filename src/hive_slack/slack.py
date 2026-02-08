@@ -90,11 +90,10 @@ def markdown_to_slack(text: str) -> str:
 
 
 def _convert_tables(text: str, protect_fn) -> str:
-    """Find markdown tables, convert to code blocks, protect them.
+    """Find markdown tables and convert to a list format that wraps gracefully.
 
-    Tables are converted to fixed-width monospace inside code blocks.
-    Markdown formatting is stripped from cell content (bold, italic, links)
-    since code blocks render literally.
+    Slack has no table support and code blocks break on narrow screens,
+    so we render tables as structured lists that reflow naturally.
     """
     lines = text.split("\n")
     result: list[str] = []
@@ -113,62 +112,68 @@ def _convert_tables(text: str, protect_fn) -> str:
                 table_lines.append(line)
         else:
             if in_table:
-                result.append(protect_fn(_render_table_as_code(table_lines)))
+                result.append(protect_fn(_render_table_as_list(table_lines)))
                 table_lines = []
                 in_table = False
             result.append(line)
 
     if in_table:
-        result.append(protect_fn(_render_table_as_code(table_lines)))
+        result.append(protect_fn(_render_table_as_list(table_lines)))
 
     return "\n".join(result)
 
 
-def _strip_markdown_inline(text: str) -> str:
-    """Strip markdown inline formatting from text (for use in code blocks)."""
-    # **bold** or __bold__ → bold
-    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
-    text = re.sub(r"__(.+?)__", r"\1", text)
-    # *italic* or _italic_ → italic
-    text = re.sub(r"(?<!\w)\*(.+?)\*(?!\w)", r"\1", text)
-    text = re.sub(r"(?<!\w)_(.+?)_(?!\w)", r"\1", text)
-    # [text](url) → text
-    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
-    # `code` → code
-    text = re.sub(r"`([^`]+)`", r"\1", text)
-    return text
+def _clean_cell(text: str) -> str:
+    """Strip markdown bold from cell text."""
+    return re.sub(r"\*\*(.+?)\*\*", r"\1", text).strip()
 
 
-def _render_table_as_code(rows: list[str]) -> str:
-    """Render table rows as a fixed-width code block with a header separator."""
+def _render_table_as_list(rows: list[str]) -> str:
+    """Render a markdown table as a structured list that wraps gracefully.
+
+    Two-column tables become:
+        *Key:* Value
+        *Key:* Value
+
+    Multi-column tables become:
+        *Row Label*
+          Col2Header: value
+          Col3Header: value
+    """
     parsed: list[list[str]] = []
     for row in rows:
-        cells = [_strip_markdown_inline(c.strip()) for c in row.strip().strip("|").split("|")]
+        cells = [c.strip() for c in row.strip().strip("|").split("|")]
         parsed.append(cells)
 
     if not parsed:
         return ""
 
-    num_cols = max(len(r) for r in parsed)
-    col_widths = [0] * num_cols
-    for row in parsed:
-        for i, cell in enumerate(row):
-            if i < num_cols:
-                col_widths[i] = max(col_widths[i], len(cell))
+    headers = parsed[0]
+    data_rows = parsed[1:]
 
-    formatted: list[str] = []
-    for row_idx, row in enumerate(parsed):
-        cells = []
-        for i in range(num_cols):
-            cell = row[i] if i < len(row) else ""
-            cells.append(cell.ljust(col_widths[i]))
-        formatted.append("  ".join(cells))
-        # Add separator after header row
-        if row_idx == 0 and len(parsed) > 1:
-            sep = "  ".join("─" * w for w in col_widths)
-            formatted.append(sep)
+    if not data_rows:
+        return "  ".join(f"*{_clean_cell(h)}*" for h in headers)
 
-    return "```\n" + "\n".join(formatted) + "\n```"
+    # Two-column: simple key/value pairs
+    if len(headers) == 2:
+        lines = []
+        for row in data_rows:
+            key = _clean_cell(row[0]) if len(row) > 0 else ""
+            val = row[1].strip() if len(row) > 1 else ""
+            lines.append(f"*{key}:* {val}")
+        return "\n".join(lines)
+
+    # Multi-column: use header names as labels per data row
+    lines = []
+    for row in data_rows:
+        row_label = _clean_cell(row[0]) if row else ""
+        lines.append(f"*{row_label}*")
+        for col_idx in range(1, len(headers)):
+            header = _clean_cell(headers[col_idx]) if col_idx < len(headers) else ""
+            value = row[col_idx].strip() if col_idx < len(row) else ""
+            lines.append(f"  {header}: {value}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
 
 
 class SlackConnector:
