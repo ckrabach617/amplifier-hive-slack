@@ -158,7 +158,7 @@ class TestHandleMention:
 
         mock_say.assert_called_once()
         call_kwargs = mock_say.call_args[1]
-        assert "error" in call_kwargs["text"].lower()
+        assert "not working" in call_kwargs["text"].lower()
         assert call_kwargs["username"] == "Alpha"
 
     @pytest.mark.asyncio

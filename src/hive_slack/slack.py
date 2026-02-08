@@ -209,11 +209,15 @@ class SlackConnector:
 
         # Bot user ID — populated in start() via auth.test
         self._bot_user_id: str = ""
+        self._bot_id: str = ""  # The bot's bot_id (different from user_id)
 
         # Channel topic config cache (avoids hitting conversations.info every message)
         self._channel_cache: dict[str, ChannelConfig] = {}
         self._cache_timestamps: dict[str, float] = {}
         self._cache_ttl = 60  # seconds — re-read topic every 60s
+
+        # Track messages we've already handled (prevent double-processing)
+        self._handled_messages: set[str] = set()
 
         # Register event handlers
         self._app.event("app_mention")(self._handle_mention)
@@ -221,6 +225,13 @@ class SlackConnector:
 
     async def _handle_mention(self, event: dict, say) -> None:
         """Handle @mention events — the core message flow."""
+        # Mark this message as handled so _handle_message skips it
+        msg_ts = event.get("ts", "")
+        self._handled_messages.add(msg_ts)
+        # Keep the set bounded (only recent messages matter)
+        if len(self._handled_messages) > 1000:
+            self._handled_messages = set(list(self._handled_messages)[-500:])
+
         text = self._strip_mention(event.get("text", ""))
         if not text:
             return
@@ -229,7 +240,7 @@ class SlackConnector:
         thread_ts = event.get("thread_ts") or event.get("ts", "")
         user = event.get("user", "unknown")
 
-        # Route to instance: parse /name prefix or use default
+        # Route to instance: parse name prefix or use default
         instance_name, prompt = self._parse_instance_prefix(
             text, self._config.instance_names, self._config.default_instance
         )
@@ -261,7 +272,7 @@ class SlackConnector:
         except Exception:
             logger.exception("Error handling mention in %s", conversation_id)
             await say(
-                text="Sorry, I encountered an error processing your request.",
+                text="Something's not working on my end. Try again?",
                 thread_ts=thread_ts,
                 username=instance.persona.name,
                 icon_emoji=instance.persona.emoji,
@@ -344,6 +355,17 @@ class SlackConnector:
         # Skip bot messages (prevent loops!)
         if event.get("bot_id") or event.get("subtype"):
             logger.debug("Skipping: bot_id=%s subtype=%s", event.get("bot_id"), event.get("subtype"))
+            return
+
+        # Skip messages from our own bot user (belt + suspenders for loop prevention)
+        if event.get("user") == self._bot_user_id:
+            logger.debug("Skipping: message from our own bot user")
+            return
+
+        # Skip if already handled by _handle_mention (prevents double-processing)
+        msg_ts = event.get("ts", "")
+        if msg_ts in self._handled_messages:
+            logger.debug("Skipping: already handled by _handle_mention (ts=%s)", msg_ts)
             return
 
         # Skip if this is an @mention (handled by _handle_mention)
