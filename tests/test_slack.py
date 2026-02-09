@@ -191,7 +191,7 @@ class TestInstanceRouting:
 
     def test_colon_pattern(self):
         """'alpha: review this' routes to alpha."""
-        name, text = SlackConnector._parse_instance_prefix(
+        name, text, _ = SlackConnector._parse_instance_prefix(
             "alpha: review this code", ["alpha", "beta"], "alpha"
         )
         assert name == "alpha"
@@ -199,7 +199,7 @@ class TestInstanceRouting:
 
     def test_comma_pattern(self):
         """'beta, what do you think' routes to beta."""
-        name, text = SlackConnector._parse_instance_prefix(
+        name, text, _ = SlackConnector._parse_instance_prefix(
             "beta, what do you think?", ["alpha", "beta"], "alpha"
         )
         assert name == "beta"
@@ -207,7 +207,7 @@ class TestInstanceRouting:
 
     def test_at_pattern(self):
         """'@beta review this' routes to beta."""
-        name, text = SlackConnector._parse_instance_prefix(
+        name, text, _ = SlackConnector._parse_instance_prefix(
             "@beta review this", ["alpha", "beta"], "alpha"
         )
         assert name == "beta"
@@ -215,7 +215,7 @@ class TestInstanceRouting:
 
     def test_hey_pattern(self):
         """'hey alpha, look at this' routes to alpha."""
-        name, text = SlackConnector._parse_instance_prefix(
+        name, text, _ = SlackConnector._parse_instance_prefix(
             "hey alpha, look at this", ["alpha", "beta"], "alpha"
         )
         assert name == "alpha"
@@ -223,14 +223,14 @@ class TestInstanceRouting:
 
     def test_name_as_first_word(self):
         """'beta what do you think' routes to beta."""
-        name, text = SlackConnector._parse_instance_prefix(
+        name, text, _ = SlackConnector._parse_instance_prefix(
             "beta what do you think?", ["alpha", "beta"], "alpha"
         )
         assert name == "beta"
         assert text == "what do you think?"
 
     def test_falls_back_to_default_for_no_name(self):
-        name, text = SlackConnector._parse_instance_prefix(
+        name, text, _ = SlackConnector._parse_instance_prefix(
             "just a question", ["alpha", "beta"], "alpha"
         )
         assert name == "alpha"
@@ -238,14 +238,14 @@ class TestInstanceRouting:
 
     def test_no_false_positive_on_embedded_name(self):
         """'the alpha version is...' should NOT route to alpha."""
-        name, text = SlackConnector._parse_instance_prefix(
+        name, text, _ = SlackConnector._parse_instance_prefix(
             "the alpha version is great", ["alpha", "beta"], "alpha"
         )
         assert name == "alpha"
         assert text == "the alpha version is great"
 
     def test_case_insensitive_matching(self):
-        name, text = SlackConnector._parse_instance_prefix(
+        name, text, _ = SlackConnector._parse_instance_prefix(
             "Alpha: review this", ["alpha", "beta"], "alpha"
         )
         assert name == "alpha"
@@ -1594,3 +1594,238 @@ class TestMessageQueuing:
         assert "msg one" in batch_prompt
         assert "msg two" in batch_prompt
         assert "msg three" in batch_prompt
+
+
+# ---------------------------------------------------------------------------
+# Milestone 4 — Thread Ownership, Emoji Summoning, Roundtable Mode
+# ---------------------------------------------------------------------------
+
+
+class TestParseInstancePrefixThreeTuple:
+    """Test 3-tuple return from _parse_instance_prefix."""
+
+    def test_explicit_name_colon(self):
+        name, text, explicit = SlackConnector._parse_instance_prefix(
+            "alpha: review this", ["alpha", "beta"], "alpha"
+        )
+        assert name == "alpha"
+        assert text == "review this"
+        assert explicit is True
+
+    def test_explicit_at_name(self):
+        name, text, explicit = SlackConnector._parse_instance_prefix(
+            "@beta look at this", ["alpha", "beta"], "alpha"
+        )
+        assert name == "beta"
+        assert explicit is True
+
+    def test_no_match_returns_default(self):
+        name, text, explicit = SlackConnector._parse_instance_prefix(
+            "just a question", ["alpha", "beta"], "alpha"
+        )
+        assert name == "alpha"
+        assert text == "just a question"
+        assert explicit is False
+
+
+class TestThreadOwnership:
+    """Test thread ownership tracking and routing."""
+
+    @pytest.mark.asyncio
+    async def test_set_and_get_owner(self):
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        connector._set_thread_owner("C1:t1", "alpha")
+        assert connector._get_thread_owner("C1:t1") == "alpha"
+
+    @pytest.mark.asyncio
+    async def test_no_owner_returns_none(self):
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        assert connector._get_thread_owner("C1:t1") is None
+
+    @pytest.mark.asyncio
+    async def test_ownership_transfer(self):
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        connector._set_thread_owner("C1:t1", "alpha")
+        connector._set_thread_owner("C1:t1", "beta")
+        assert connector._get_thread_owner("C1:t1") == "beta"
+
+    @pytest.mark.asyncio
+    async def test_bounded_eviction(self):
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        # Fill to limit
+        for i in range(10_001):
+            connector._set_thread_owner(f"C1:t{i}", "alpha")
+        # First entry should be evicted
+        assert connector._get_thread_owner("C1:t0") is None
+        # Last entry should exist
+        assert connector._get_thread_owner("C1:t10000") == "alpha"
+
+
+class TestEmojiSummoning:
+    """Test emoji reaction summoning."""
+
+    @pytest.mark.asyncio
+    async def test_instance_name_emoji_triggers_summon(self):
+        """Reacting with an instance-name emoji triggers summoning."""
+        mock_service = AsyncMock()
+        mock_service.execute.return_value = "Here's my analysis..."
+        config = make_config()
+        connector = SlackConnector(config, mock_service)
+        connector._bot_user_id = "UBOTID"
+        connector._app = AsyncMock()
+        connector._app.client = AsyncMock()
+        connector._app.client.conversations_history = AsyncMock(return_value={
+            "messages": [{"text": "Check this code", "ts": "msg_ts_123"}]
+        })
+        connector._app.client.reactions_add = AsyncMock()
+        connector._app.client.reactions_remove = AsyncMock()
+        connector._app.client.chat_postMessage = AsyncMock(return_value={"ts": "status_ts"})
+        connector._app.client.chat_delete = AsyncMock()
+        connector._app.client.conversations_info = AsyncMock(return_value={
+            "channel": {"name": "general", "topic": {"value": ""}}
+        })
+        connector._cache_timestamps["C99999"] = time.time()
+        connector._channel_cache["C99999"] = ChannelConfig(name="general")
+
+        event = {
+            "reaction": "alpha",
+            "item": {"channel": "C99999", "ts": "msg_ts_123"},
+            "user": "U_HUMAN",
+        }
+
+        mock_say = AsyncMock(return_value={"ts": "response_ts"})
+        await connector._handle_reaction(event, mock_say)
+
+        # Should have fetched the message
+        connector._app.client.conversations_history.assert_called_once()
+        # Should have called execute
+        mock_service.execute.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_non_instance_emoji_ignored(self):
+        """Non-instance emoji reactions are not treated as summons."""
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        connector._bot_user_id = "UBOTID"
+
+        event = {
+            "reaction": "thumbsup",
+            "item": {"channel": "C99999", "ts": "msg_ts"},
+            "user": "U_HUMAN",
+        }
+
+        # Should not crash, should just return
+        await connector._handle_reaction(event, AsyncMock())
+
+    @pytest.mark.asyncio
+    async def test_bot_self_reaction_ignored(self):
+        """Bot's own reactions don't trigger summons."""
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        connector._bot_user_id = "UBOTID"
+
+        event = {
+            "reaction": "alpha",
+            "item": {"channel": "C99999", "ts": "msg_ts"},
+            "user": "UBOTID",  # Bot itself
+        }
+
+        await connector._handle_reaction(event, AsyncMock())
+        # No execute call — bot ignored itself
+
+
+class TestRoundtable:
+    """Test roundtable mode."""
+
+    @pytest.mark.asyncio
+    async def test_build_roundtable_prompt(self):
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        prompt = connector._build_roundtable_prompt("What is caching?", "alpha")
+        assert "ROUNDTABLE" in prompt
+        assert "beta" in prompt  # other instance mentioned
+        assert "[PASS]" in prompt
+        assert "What is caching?" in prompt
+
+    @pytest.mark.asyncio
+    async def test_pass_response_filtered(self):
+        """[PASS] responses from instances are not posted."""
+        mock_service = AsyncMock()
+        # alpha passes, beta responds
+        async def mock_execute(instance, conv, prompt, **kwargs):
+            if instance == "alpha":
+                return "[PASS]"
+            return "Here's my perspective on caching..."
+        mock_service.execute = mock_execute
+
+        config = make_config()
+        connector = SlackConnector(config, mock_service)
+        connector._bot_user_id = "UBOTID"
+        connector._app = AsyncMock()
+        connector._app.client = AsyncMock()
+        connector._app.client.reactions_add = AsyncMock()
+        connector._app.client.reactions_remove = AsyncMock()
+        connector._app.client.chat_postMessage = AsyncMock(return_value={"ts": "status_ts"})
+        connector._app.client.chat_delete = AsyncMock()
+
+        mock_say = AsyncMock(return_value={"ts": "resp_ts"})
+
+        await connector._execute_roundtable(
+            "C1:t1", "What is caching?", "C1", "t1", "user_ts", mock_say,
+        )
+
+        # say should be called only once (beta's response, not alpha's [PASS])
+        assert mock_say.call_count == 1
+        call_kwargs = mock_say.call_args[1]
+        assert "perspective" in call_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_all_pass_no_response(self):
+        """When all instances pass, no response is posted."""
+        mock_service = AsyncMock()
+        mock_service.execute.return_value = "[PASS]"
+
+        config = make_config()
+        connector = SlackConnector(config, mock_service)
+        connector._bot_user_id = "UBOTID"
+        connector._app = AsyncMock()
+        connector._app.client = AsyncMock()
+        connector._app.client.reactions_add = AsyncMock()
+        connector._app.client.reactions_remove = AsyncMock()
+        connector._app.client.chat_postMessage = AsyncMock(return_value={"ts": "status_ts"})
+        connector._app.client.chat_delete = AsyncMock()
+
+        mock_say = AsyncMock()
+
+        await connector._execute_roundtable(
+            "C1:t1", "Thanks!", "C1", "t1", "user_ts", mock_say,
+        )
+
+        # say should NOT be called (all passed)
+        mock_say.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_roundtable_sets_thread_owner(self):
+        """Roundtable execution marks thread as _ROUNDTABLE."""
+        mock_service = AsyncMock()
+        mock_service.execute.return_value = "[PASS]"
+
+        config = make_config()
+        connector = SlackConnector(config, mock_service)
+        connector._bot_user_id = "UBOTID"
+        connector._app = AsyncMock()
+        connector._app.client = AsyncMock()
+        connector._app.client.reactions_add = AsyncMock()
+        connector._app.client.reactions_remove = AsyncMock()
+        connector._app.client.chat_postMessage = AsyncMock(return_value={"ts": "status_ts"})
+        connector._app.client.chat_delete = AsyncMock()
+
+        await connector._execute_roundtable(
+            "C1:t1", "Hello", "C1", "t1", "user_ts", AsyncMock(),
+        )
+
+        assert connector._get_thread_owner("C1:t1") == "_ROUNDTABLE"

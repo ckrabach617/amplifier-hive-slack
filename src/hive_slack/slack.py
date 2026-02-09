@@ -258,6 +258,11 @@ class SlackConnector:
         # conversation_id → [queued prompts]
         self._message_queues: dict[str, list[str]] = {}
 
+        # Thread ownership: conversation_id → instance_name (or "_ROUNDTABLE")
+        self._thread_owners: dict[str, str] = {}
+        self._thread_owner_order: list[str] = []
+        _THREAD_OWNER_LIMIT = 10_000
+
         # Register event handlers
         self._app.event("app_mention")(self._handle_mention)
         self._app.event("message")(self._handle_message)
@@ -547,6 +552,7 @@ class SlackConnector:
                 icon_emoji=instance.persona.emoji,
             )
             self._track_prompt(result, instance_name, conversation_id, prompt)
+            self._set_thread_owner(conversation_id, instance_name)
 
         except Exception:
             logger.exception("Error in execution for %s", conversation_id)
@@ -618,7 +624,7 @@ class SlackConnector:
         user = event.get("user", "unknown")
 
         # Route to instance: parse name prefix or use default
-        instance_name, prompt = self._parse_instance_prefix(
+        instance_name, prompt, _ = self._parse_instance_prefix(
             text, self._config.instance_names, self._config.default_instance
         )
         instance = self._config.get_instance(instance_name)
@@ -728,36 +734,37 @@ class SlackConnector:
         text: str,
         known_instances: list[str],
         default: str,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, bool]:
         """Parse instance name from the start of message text.
 
-        Returns (instance_name, remaining_text).
+        Returns (instance_name, remaining_text, was_explicit).
+        was_explicit is True if a pattern matched, False if fell through to default.
 
         Supports natural addressing patterns:
-            "alpha: review this code"     → ("alpha", "review this code")
-            "alpha, what do you think"    → ("alpha", "what do you think")
-            "@alpha review this"          → ("alpha", "review this")
-            "alpha review this"           → ("alpha", "review this")
-            "hey alpha, look at this"     → ("alpha", "look at this")
-            "just a question"             → (default, "just a question")
-            "the alpha version is..."     → (default, "the alpha version is...")
+            "alpha: review this code"     → ("alpha", "review this code", True)
+            "alpha, what do you think"    → ("alpha", "what do you think", True)
+            "@alpha review this"          → ("alpha", "review this", True)
+            "alpha review this"           → ("alpha", "review this", True)
+            "hey alpha, look at this"     → ("alpha", "look at this", True)
+            "just a question"             → (default, "just a question", False)
+            "the alpha version is..."     → (default, "the alpha version is...", False)
         """
         lower = text.lower()
 
         # Pattern 1: "name: ..." or "name, ..."
         match = re.match(r"^(\w+)[,:]\s+(.*)", text, re.DOTALL)
         if match and match.group(1).lower() in known_instances:
-            return match.group(1).lower(), match.group(2).strip()
+            return match.group(1).lower(), match.group(2).strip(), True
 
         # Pattern 2: "@name ..."
         match = re.match(r"^@(\w+)\s+(.*)", text, re.DOTALL)
         if match and match.group(1).lower() in known_instances:
-            return match.group(1).lower(), match.group(2).strip()
+            return match.group(1).lower(), match.group(2).strip(), True
 
         # Pattern 3: "hey name, ..." or "hey name ..."
         match = re.match(r"^hey\s+(\w+)[,\s]+(.*)", text, re.DOTALL | re.IGNORECASE)
         if match and match.group(1).lower() in known_instances:
-            return match.group(1).lower(), match.group(2).strip()
+            return match.group(1).lower(), match.group(2).strip(), True
 
         # Pattern 4: "name ..." (name as first word, only if unambiguous)
         # Only match if the first word IS an instance name exactly
@@ -765,9 +772,9 @@ class SlackConnector:
         if first_word in known_instances:
             rest = text[len(first_word) :].strip()
             if rest:
-                return first_word, rest
+                return first_word, rest, True
 
-        return default, text
+        return default, text, False
 
     async def _handle_message(self, event: dict, say) -> None:
         """Handle all channel messages — the primary routing path for configured channels.
@@ -834,7 +841,7 @@ class SlackConnector:
             # DM: use natural addressing or default instance, no topic needed.
             # Requires Slack app scopes: im:read, im:history
             # Requires event subscription: message.im
-            instance_name, prompt = self._parse_instance_prefix(
+            instance_name, prompt, _ = self._parse_instance_prefix(
                 text, self._config.instance_names, self._config.default_instance
             )
             conversation_id = f"dm:{user}"
@@ -842,28 +849,101 @@ class SlackConnector:
         else:
             # Get channel config from topic
             channel_config = await self._get_channel_config(channel)
+            conversation_id = f"{channel}:{thread_ts}"
+            channel_name = channel_config.name
 
-            # Route based on config
-            if channel_config.instance:
+            # Parse for explicit addressing
+            addressed_name, addressed_prompt, was_explicit = self._parse_instance_prefix(
+                text, self._config.instance_names, self._config.default_instance
+            )
+            owner = self._get_thread_owner(conversation_id)
+
+            # Routing priority:
+            # 1. Roundtable + unaddressed → fan out
+            # 2. Single-instance channel → forced routing
+            # 3. Explicit address → that instance
+            # 4. Thread owner → owner
+            # 5. Channel config (default)
+            # 6. No config → ignore
+
+            if channel_config.mode == "roundtable" and not was_explicit:
+                # Roundtable fan-out (unaddressed message)
+                # Download files first
+                file_descriptions = None
+                if files:
+                    working_dir_path = Path(
+                        self._config.get_instance(
+                            self._config.default_instance
+                        ).working_dir
+                    ).expanduser()
+                    working_dir_path.mkdir(parents=True, exist_ok=True)
+                    desc_lines = []
+                    for file_info in files:
+                        saved_path = await self._download_slack_file(
+                            file_info, working_dir_path
+                        )
+                        if saved_path:
+                            desc_lines.append(
+                                f"  {file_info.get('name', 'file')} ({file_info.get('size', 0)} bytes) → ./{saved_path.name}"
+                            )
+                    if desc_lines:
+                        file_descriptions = (
+                            "[User uploaded files:\n" + "\n".join(desc_lines) + "]"
+                        )
+
+                rt_prompt = self._build_prompt(
+                    text, user, channel, channel_name, file_descriptions
+                )
+
+                # Onboarding
+                from hive_slack.onboarding import UserOnboarding
+
+                onboarding = await UserOnboarding.load(user)
+                if onboarding.is_first_interaction:
+                    await self._send_welcome_dm(
+                        user,
+                        self._config.get_instance(
+                            self._config.default_instance
+                        ).persona,
+                    )
+                    onboarding.mark_welcomed()
+                is_new_thread = onboarding.record_thread(conversation_id)
+
+                await self._execute_roundtable(
+                    conversation_id,
+                    rt_prompt,
+                    channel,
+                    thread_ts,
+                    event.get("ts", ""),
+                    say,
+                    onboarding=onboarding,
+                    is_new_thread=is_new_thread,
+                )
+                return
+
+            elif channel_config.mode == "roundtable" and was_explicit:
+                # Explicitly addressed in roundtable → single instance
+                instance_name = addressed_name
+                prompt = addressed_prompt
+            elif channel_config.instance:
                 # Single-instance channel: all messages go to this instance
                 instance_name = channel_config.instance
                 prompt = text
-            elif channel_config.mode == "roundtable":
-                # TODO: Milestone 4 — fan out to all instances
-                # For now, treat as default routing
-                instance_name = self._config.default_instance
+            elif was_explicit:
+                # User explicitly addressed an instance
+                instance_name = addressed_name
+                prompt = addressed_prompt
+            elif owner and owner != "_ROUNDTABLE":
+                # Thread has an owner, no explicit override → route to owner
+                instance_name = owner
                 prompt = text
             elif channel_config.default:
-                # Default instance channel: check for /name override, else use default
-                instance_name, prompt = self._parse_instance_prefix(
-                    text, self._config.instance_names, channel_config.default
-                )
+                # Channel has a default, use it
+                instance_name = channel_config.default
+                prompt = text
             else:
                 # Unconfigured channel: ignore non-mention messages
                 return
-
-            conversation_id = f"{channel}:{thread_ts}"
-            channel_name = channel_config.name
 
         # Verify instance exists
         try:
@@ -984,6 +1064,24 @@ class SlackConnector:
                 for key in oldest_keys:
                     del self._message_prompts[key]
 
+    def _set_thread_owner(self, conversation_id: str, instance_name: str) -> None:
+        """Record or transfer thread ownership."""
+        if conversation_id in self._thread_owners:
+            try:
+                self._thread_owner_order.remove(conversation_id)
+            except ValueError:
+                pass
+        self._thread_owners[conversation_id] = instance_name
+        self._thread_owner_order.append(conversation_id)
+        # Evict oldest if over limit
+        while len(self._thread_owners) > 10_000:
+            oldest = self._thread_owner_order.pop(0)
+            self._thread_owners.pop(oldest, None)
+
+    def _get_thread_owner(self, conversation_id: str) -> str | None:
+        """Get the instance that owns this thread, or None."""
+        return self._thread_owners.get(conversation_id)
+
     async def _handle_reaction(self, event: dict, say) -> None:
         """Handle emoji reactions on bot messages.
 
@@ -999,6 +1097,13 @@ class SlackConnector:
         channel = item.get("channel", "")
         message_ts = item.get("ts", "")
         user = event.get("user", "")
+
+        # Emoji summoning: react with an instance-name emoji to summon that instance
+        if reaction in self._config.instance_names:
+            if user == self._bot_user_id:
+                return
+            await self._handle_emoji_summon(reaction, channel, message_ts, user, say)
+            return
 
         # Only handle reactions on our bot's messages
         if message_ts not in self._message_prompts:
@@ -1037,6 +1142,205 @@ class SlackConnector:
                 timestamp=message_ts,
                 name="white_check_mark",
             )
+
+    async def _handle_emoji_summon(
+        self,
+        instance_name: str,
+        channel: str,
+        message_ts: str,
+        user: str,
+        say,
+    ) -> None:
+        """Summon an instance by reacting with its name as an emoji.
+
+        Fetches the reacted message text, builds a prompt, and executes
+        against the named instance in a thread off that message.
+        """
+        # Fetch the message that was reacted to
+        try:
+            result = await self._app.client.conversations_history(
+                channel=channel,
+                latest=message_ts,
+                inclusive=True,
+                limit=1,
+            )
+            messages = result.get("messages", [])
+            if not messages:
+                logger.warning("Emoji summon: could not fetch message %s", message_ts)
+                return
+            original_text = messages[0].get("text", "")
+        except Exception:
+            logger.exception("Emoji summon: error fetching message %s", message_ts)
+            return
+
+        if not original_text:
+            return
+
+        instance = self._config.get_instance(instance_name)
+        conversation_id = f"{channel}:{message_ts}"
+
+        # Get channel name for context
+        channel_config = await self._get_channel_config(channel)
+        prompt = self._build_prompt(
+            original_text, user, channel, channel_config.name
+        )
+
+        logger.info(
+            "Emoji summon: %s summoned %s on %s",
+            user,
+            instance_name,
+            message_ts,
+        )
+
+        await self._execute_with_progress(
+            instance_name,
+            instance,
+            conversation_id,
+            prompt,
+            channel,
+            message_ts,  # thread_ts = the reacted message
+            message_ts,  # user_ts = same (for ⏳ reaction)
+            say,
+        )
+
+    def _build_roundtable_prompt(self, base_prompt: str, instance_name: str) -> str:
+        """Wrap a prompt with roundtable instructions for one instance."""
+        others = [n for n in self._config.instance_names if n != instance_name]
+        return (
+            f"[ROUNDTABLE MODE — Multiple AI instances are in this conversation.\n"
+            f"Other instances: {', '.join(others)}\n"
+            f"Respond ONLY if you have a unique, valuable perspective.\n"
+            f"If you have nothing substantive to add, respond with exactly: [PASS]\n"
+            f"Do not repeat or rephrase what another instance would say.]\n\n"
+            f"{base_prompt}"
+        )
+
+    async def _execute_roundtable(
+        self,
+        conversation_id: str,
+        base_prompt: str,
+        channel: str,
+        thread_ts: str,
+        user_ts: str,
+        say,
+        *,
+        onboarding: object | None = None,
+        is_new_thread: bool = False,
+    ) -> None:
+        """Execute a roundtable: fan out to all instances concurrently.
+
+        Each instance gets the prompt wrapped with roundtable instructions.
+        Responses containing [PASS] are filtered out. Remaining responses
+        are posted with a stagger delay to stay under Slack rate limits.
+        """
+        import asyncio
+
+        # React with ⏳ on the user's message
+        try:
+            await self._app.client.reactions_add(
+                channel=channel,
+                timestamp=user_ts,
+                name="hourglass_flowing_sand",
+            )
+        except Exception:
+            pass
+
+        # Post editable status message
+        status_msg = None
+        try:
+            result = await self._app.client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts,
+                text="\u2699\ufe0f Roundtable — gathering perspectives...",
+            )
+            status_msg = result.get("ts")
+        except Exception:
+            logger.debug("Could not post roundtable status message")
+
+        try:
+            # Execute all instances concurrently
+            instance_names = self._config.instance_names
+
+            async def _run_one(name: str) -> tuple[str, str]:
+                rt_prompt = self._build_roundtable_prompt(base_prompt, name)
+                response = await self._service.execute(
+                    name, conversation_id, rt_prompt
+                )
+                return name, response
+
+            results = await asyncio.gather(
+                *[_run_one(name) for name in instance_names],
+                return_exceptions=True,
+            )
+
+            # Filter out [PASS] responses and errors
+            responses: list[tuple[str, str]] = []
+            for r in results:
+                if isinstance(r, Exception):
+                    logger.warning("Roundtable instance error: %s", r)
+                    continue
+                name, text = r
+                if text.strip() == "[PASS]":
+                    continue
+                responses.append((name, text))
+
+            # Delete status message
+            if status_msg:
+                try:
+                    await self._app.client.chat_delete(
+                        channel=channel, ts=status_msg
+                    )
+                except Exception:
+                    pass
+
+            # Post responses with stagger
+            first_posted = True
+            for i, (name, text) in enumerate(responses):
+                instance = self._config.get_instance(name)
+                response_text = markdown_to_slack(text)
+
+                # Append onboarding suffix only to the first response
+                if first_posted and onboarding and hasattr(onboarding, "get_response_suffix"):
+                    suffix = onboarding.get_response_suffix(is_new_thread, 0.0, False)
+                    if suffix:
+                        response_text = f"{response_text}\n{suffix}"
+                    first_posted = False
+
+                result = await say(
+                    text=response_text,
+                    thread_ts=thread_ts,
+                    username=instance.persona.name,
+                    icon_emoji=instance.persona.emoji,
+                )
+                self._track_prompt(result, name, conversation_id, base_prompt)
+
+                # Stagger between posts (skip delay after last one)
+                if i < len(responses) - 1:
+                    await asyncio.sleep(1.5)
+
+        except Exception:
+            logger.exception("Error in roundtable execution for %s", conversation_id)
+            if status_msg:
+                try:
+                    await self._app.client.chat_delete(
+                        channel=channel, ts=status_msg
+                    )
+                except Exception:
+                    pass
+
+        finally:
+            # Remove ⏳ reaction
+            try:
+                await self._app.client.reactions_remove(
+                    channel=channel,
+                    timestamp=user_ts,
+                    name="hourglass_flowing_sand",
+                )
+            except Exception:
+                pass
+
+            # Record thread as roundtable-owned
+            self._set_thread_owner(conversation_id, "_ROUNDTABLE")
 
     async def _handle_approval_action(self, ack, body) -> None:
         """Handle Block Kit button clicks for the approval system."""
