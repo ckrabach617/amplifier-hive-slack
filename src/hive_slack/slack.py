@@ -293,6 +293,32 @@ class SlackConnector:
             parts.append(text)
         return "\n".join(parts)
 
+    async def _send_welcome_dm(self, user_id: str, persona) -> None:
+        """Send one-time welcome DM to a first-time user."""
+        try:
+            result = await self._app.client.conversations_open(users=user_id)
+            dm_channel = result["channel"]["id"]
+
+            welcome = (
+                f"Hey \u2014 I'm {persona.name}. Since this is your first time, "
+                "one thing worth knowing:\n\n"
+                "Each thread is its own conversation. I start fresh every "
+                "time, so I won't have context from other threads. If you "
+                "need to reference something from elsewhere, just paste "
+                "the relevant bit.\n\n"
+                "You can @mention me in channels or message me here directly."
+            )
+
+            await self._app.client.chat_postMessage(
+                channel=dm_channel,
+                text=welcome,
+                username=persona.name,
+                icon_emoji=persona.emoji,
+            )
+            logger.info("Sent welcome DM to %s", user_id)
+        except Exception:
+            logger.warning("Failed to send welcome DM to %s", user_id, exc_info=True)
+
     async def _download_slack_file(
         self, file_info: dict, working_dir: Path
     ) -> Path | None:
@@ -398,8 +424,16 @@ class SlackConnector:
         thread_ts: str,
         user_ts: str,
         say,
+        *,
+        onboarding: object | None = None,
+        is_new_thread: bool = False,
+        has_cross_ref: bool = False,
     ) -> None:
         """Execute a prompt with progress indicators and message queuing."""
+        import time as _time
+
+        start_time = _time.monotonic()
+
         # React with ⏳ on the user's message
         try:
             await self._app.client.reactions_add(
@@ -491,8 +525,23 @@ class SlackConnector:
             await self._process_outbox(working_dir, channel, thread_ts, instance)
 
             # Post final response with persona
+            response_text = markdown_to_slack(response)
+
+            # Append onboarding suffix if applicable
+            if onboarding and hasattr(onboarding, "get_response_suffix"):
+                import asyncio as _asyncio
+
+                duration = _time.monotonic() - start_time
+                suffix = onboarding.get_response_suffix(
+                    is_new_thread, duration, has_cross_ref
+                )
+                if suffix:
+                    response_text = f"{response_text}\n{suffix}"
+                # Fire-and-forget save
+                _asyncio.create_task(onboarding.save())
+
             result = await say(
-                text=markdown_to_slack(response),
+                text=response_text,
                 thread_ts=thread_ts,
                 username=instance.persona.name,
                 icon_emoji=instance.persona.emoji,
@@ -576,6 +625,19 @@ class SlackConnector:
 
         conversation_id = f"{channel}:{thread_ts}"
 
+        # Onboarding
+        from hive_slack.onboarding import UserOnboarding
+
+        onboarding = await UserOnboarding.load(user)
+        if onboarding.is_first_interaction:
+            await self._send_welcome_dm(user, instance.persona)
+            onboarding.mark_welcomed()
+
+        is_new_thread = onboarding.record_thread(conversation_id)
+        has_cross_ref = (
+            UserOnboarding.has_cross_thread_reference(text) if is_new_thread else False
+        )
+
         # Download any uploaded files (mentions can include files too)
         files = event.get("files", [])
         file_descriptions = None
@@ -651,6 +713,9 @@ class SlackConnector:
             thread_ts,
             event.get("ts", ""),
             say,
+            onboarding=onboarding,
+            is_new_thread=is_new_thread,
+            has_cross_ref=has_cross_ref,
         )
 
     @staticmethod
@@ -807,6 +872,19 @@ class SlackConnector:
             logger.warning("Unknown instance '%s' in channel config", instance_name)
             return
 
+        # Onboarding
+        from hive_slack.onboarding import UserOnboarding
+
+        onboarding = await UserOnboarding.load(user)
+        if onboarding.is_first_interaction:
+            await self._send_welcome_dm(user, instance.persona)
+            onboarding.mark_welcomed()
+
+        is_new_thread = onboarding.record_thread(conversation_id)
+        has_cross_ref = (
+            UserOnboarding.has_cross_thread_reference(text) if is_new_thread else False
+        )
+
         # Download any uploaded files
         file_descriptions = None
         if files:
@@ -881,6 +959,9 @@ class SlackConnector:
             thread_ts,
             event.get("ts", ""),
             say,
+            onboarding=onboarding,
+            is_new_thread=is_new_thread,
+            has_cross_ref=has_cross_ref,
         )
 
     def _track_prompt(
