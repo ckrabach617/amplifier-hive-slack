@@ -78,7 +78,7 @@ def cli() -> None:
     """CLI entry point with subcommands."""
     args = sys.argv[1:]
 
-    if not args or args[0] not in ("service", "slack"):
+    if not args or args[0] not in ("service", "slack", "setup"):
         # Default: run the bot (backward compatible)
         config_path = args[0] if args else "config/example.yaml"
         asyncio.run(run(config_path))
@@ -86,7 +86,11 @@ def cli() -> None:
 
     command = args[0]
 
-    if command == "service":
+    if command == "setup":
+        from hive_slack.setup import run_setup
+
+        run_setup()
+    elif command == "service":
         _handle_service_command(args[1:])
     elif command == "slack":
         _handle_slack_command(args[1:])

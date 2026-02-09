@@ -53,7 +53,7 @@ class InProcessSessionManager:
                 logger.info(
                     "Adding provider: %s (%s)",
                     provider["module"],
-                    provider["config"]["model"],
+                    provider["config"].get("model", "default"),
                 )
                 provider_bundle = Bundle(
                     name="provider-overlay",
@@ -102,6 +102,12 @@ class InProcessSessionManager:
                 "module": "provider-openai",
                 "source": "git+https://github.com/microsoft/amplifier-module-provider-openai@main",
                 "config": {"model": "gpt-4o"},
+            }
+        if os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"):
+            return {
+                "module": "provider-gemini",
+                "source": "git+https://github.com/microsoft/amplifier-module-provider-gemini@main",
+                "config": {},
             }
         return None
 
