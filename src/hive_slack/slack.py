@@ -36,6 +36,7 @@ class SessionManager(Protocol):
         conversation_id: str,
         prompt: str,
         on_progress: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+        slack_context: dict[str, Any] | None = None,
     ) -> str: ...
 
 
@@ -264,6 +265,11 @@ class SlackConnector:
         # Requires event subscription: reaction_added
         self._app.event("reaction_added")(self._handle_reaction)
 
+        # Handle Block Kit button clicks (for approval system)
+        import re as _re
+
+        self._app.action(_re.compile(r"^approval_"))(self._handle_approval_action)
+
     def _build_prompt(
         self,
         text: str,
@@ -452,6 +458,14 @@ class SlackConnector:
                 except Exception:
                     pass  # Best effort, may hit rate limits
 
+        # Build Slack context for session creation
+        slack_context = {
+            "client": self._app.client,
+            "channel": channel,
+            "thread_ts": thread_ts,
+            "user_ts": user_ts,
+        }
+
         try:
             # Execute
             response = await self._service.execute(
@@ -459,6 +473,7 @@ class SlackConnector:
                 conversation_id,
                 prompt,
                 on_progress=on_progress,
+                slack_context=slack_context,
             )
 
             # Delete status message
@@ -941,6 +956,30 @@ class SlackConnector:
                 timestamp=message_ts,
                 name="white_check_mark",
             )
+
+    async def _handle_approval_action(self, ack, body) -> None:
+        """Handle Block Kit button clicks for the approval system."""
+        await ack()  # Acknowledge immediately (Slack requires within 3 seconds)
+
+        actions = body.get("actions", [])
+        if not actions:
+            return
+
+        action = actions[0]
+        action_id = action.get("action_id", "")
+        value = action.get("value", "")
+
+        logger.info("Approval action: %s → %s", action_id, value)
+
+        # Find the matching approval system across all active sessions
+        if hasattr(self._service, "_approval_systems"):
+            for session_key, approval in self._service._approval_systems.items():
+                if hasattr(approval, "resolve_approval"):
+                    if approval.resolve_approval(action_id, value):
+                        logger.info("Approval resolved for session %s", session_key)
+                        return
+
+        logger.debug("No pending approval matched action %s", action_id)
 
     async def _get_channel_config(self, channel_id: str) -> ChannelConfig:
         """Get routing config for a channel, parsed from its topic. Cached."""

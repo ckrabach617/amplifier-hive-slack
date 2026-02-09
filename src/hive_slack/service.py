@@ -32,6 +32,9 @@ class InProcessSessionManager:
         self._prepared: dict[str, object] = {}  # bundle_name → PreparedBundle
         self._sessions: dict[str, object] = {}  # "instance:conv_id" → AmplifierSession
         self._locks: dict[str, asyncio.Lock] = {}
+        self._approval_systems: dict[
+            str, object
+        ] = {}  # session_key → SlackApprovalSystem
 
     async def start(self) -> None:
         """Load and prepare bundles for all instances. Called once at startup."""
@@ -117,6 +120,7 @@ class InProcessSessionManager:
         conversation_id: str,
         prompt: str,
         on_progress: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+        slack_context: dict[str, Any] | None = None,
     ) -> str:
         """Execute a prompt with optional progress callback.
 
@@ -134,7 +138,9 @@ class InProcessSessionManager:
         session_key = f"{instance_name}:{conversation_id}"
         lock = self._locks.setdefault(session_key, asyncio.Lock())
         async with lock:
-            session = await self._get_or_create_session(instance_name, conversation_id)
+            session = await self._get_or_create_session(
+                instance_name, conversation_id, slack_context=slack_context
+            )
             logger.info(
                 "Executing for %s in %s: %s",
                 instance_name,
@@ -204,7 +210,12 @@ class InProcessSessionManager:
 
         return False
 
-    async def _get_or_create_session(self, instance_name: str, conversation_id: str):
+    async def _get_or_create_session(
+        self,
+        instance_name: str,
+        conversation_id: str,
+        slack_context: dict[str, Any] | None = None,
+    ):
         """Get existing session or create a new one."""
         session_key = f"{instance_name}:{conversation_id}"
         if session_key not in self._sessions:
@@ -226,7 +237,51 @@ class InProcessSessionManager:
                 instance.bundle,
                 working_dir,
             )
-            session = await prepared.create_session(session_cwd=working_dir)
+
+            # Create Slack-specific systems if context provided
+            approval_system = None
+            display_system = None
+
+            if slack_context:
+                from hive_slack.approval import SlackApprovalSystem
+                from hive_slack.display import SlackDisplaySystem
+
+                client = slack_context.get("client")
+                channel = slack_context.get("channel", "")
+                thread_ts = slack_context.get("thread_ts", "")
+
+                approval_system = SlackApprovalSystem(client, channel, thread_ts)
+                display_system = SlackDisplaySystem(client, channel, thread_ts)
+
+                # Store approval system so connector can resolve button clicks
+                self._approval_systems[session_key] = approval_system
+
+            session = await prepared.create_session(
+                session_cwd=working_dir,
+                approval_system=approval_system,
+                display_system=display_system,
+            )
+
+            # Mount Slack tools post-creation
+            if slack_context:
+                from hive_slack.tools import create_slack_tools
+
+                client = slack_context["client"]
+                channel = slack_context.get("channel", "")
+                thread_ts = slack_context.get("thread_ts", "")
+                user_ts = slack_context.get("user_ts", "")
+
+                tools = create_slack_tools(client, channel, thread_ts, user_ts)
+                for tool in tools:
+                    try:
+                        await session.coordinator.mount("tools", tool)
+                    except Exception:
+                        logger.debug(
+                            "Could not mount tool %s",
+                            getattr(tool, "name", "?"),
+                            exc_info=True,
+                        )
+
             self._sessions[session_key] = session
         return self._sessions[session_key]
 
@@ -292,6 +347,13 @@ class InProcessSessionManager:
                 exc_info=True,
             )
 
+    def get_approval_system(
+        self, instance_name: str, conversation_id: str
+    ) -> object | None:
+        """Get the approval system for a session (for resolving button clicks)."""
+        session_key = f"{instance_name}:{conversation_id}"
+        return self._approval_systems.get(session_key)
+
     async def stop(self) -> None:
         """Cleanup all sessions."""
         logger.info(
@@ -305,3 +367,4 @@ class InProcessSessionManager:
                 logger.exception("Error cleaning up session %s", key)
         self._sessions.clear()
         self._locks.clear()
+        self._approval_systems.clear()
