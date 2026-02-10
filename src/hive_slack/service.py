@@ -210,18 +210,69 @@ class InProcessSessionManager:
 
         async def on_tool_pre(event_name: str, data: dict[str, Any]) -> HookResult:
             tool_name = data.get("tool_name", "")
+            logger.info("Progress hook fired: tool:pre → %s", tool_name)
+
+            payload: dict[str, Any] = {"tool": tool_name}
+
+            # Extract delegate agent name for richer status
+            if tool_name == "delegate":
+                tool_input = data.get("tool_input", {})
+                if isinstance(tool_input, str):
+                    import json as _json
+
+                    try:
+                        tool_input = _json.loads(tool_input)
+                    except Exception:
+                        tool_input = {}
+                if isinstance(tool_input, dict):
+                    agent = tool_input.get("agent", "")
+                    if agent:
+                        payload["agent"] = agent
+
             try:
-                await callback("tool:start", {"tool": tool_name})
+                await callback("tool:start", payload)
             except Exception:
-                pass
+                logger.warning("Progress callback error for tool:start", exc_info=True)
             return HookResult(action="continue")
 
         async def on_tool_post(event_name: str, data: dict[str, Any]) -> HookResult:
             tool_name = data.get("tool_name", "")
+            logger.info("Progress hook fired: tool:post → %s", tool_name)
+
+            payload: dict[str, Any] = {"tool": tool_name}
+
+            # Extract todo data when the todo tool is called
+            if tool_name == "todo":
+                tool_input = data.get("tool_input", {})
+                if isinstance(tool_input, str):
+                    import json as _json
+
+                    try:
+                        tool_input = _json.loads(tool_input)
+                    except Exception:
+                        tool_input = {}
+                if isinstance(tool_input, dict):
+                    todos = tool_input.get("todos")
+                    if todos is None:
+                        # Fallback: check result output (for "list" action)
+                        result = data.get("result", {})
+                        output = (
+                            result.get("output", {})
+                            if isinstance(result, dict)
+                            else {}
+                        )
+                        todos = (
+                            output.get("todos")
+                            if isinstance(output, dict)
+                            else None
+                        )
+                    if todos:
+                        payload["todos"] = todos
+
             try:
-                await callback("tool:end", {"tool": tool_name})
+                await callback("tool:end", payload)
             except Exception:
-                pass
+                logger.warning("Progress callback error for tool:end", exc_info=True)
             return HookResult(action="continue")
 
         try:
@@ -229,16 +280,18 @@ class InProcessSessionManager:
                 "tool:pre", on_tool_pre, priority=999, name="_progress_pre"
             )
             unregister_fns.append(unreg)
+            logger.info("Registered progress hook: tool:pre")
         except Exception:
-            logger.debug("Could not register tool:pre progress hook", exc_info=True)
+            logger.warning("Could not register tool:pre progress hook", exc_info=True)
 
         try:
             unreg = hooks.register(
                 "tool:post", on_tool_post, priority=999, name="_progress_post"
             )
             unregister_fns.append(unreg)
+            logger.info("Registered progress hook: tool:post")
         except Exception:
-            logger.debug("Could not register tool:post progress hook", exc_info=True)
+            logger.warning("Could not register tool:post progress hook", exc_info=True)
 
         return unregister_fns
 

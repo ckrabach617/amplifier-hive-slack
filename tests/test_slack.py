@@ -1829,3 +1829,110 @@ class TestRoundtable:
         )
 
         assert connector._get_thread_owner("C1:t1") == "_ROUNDTABLE"
+
+
+class TestFormatDuration:
+    """Test duration formatting."""
+
+    def test_under_10_seconds_empty(self):
+        from hive_slack.slack import _format_duration
+        assert _format_duration(5.0) == ""
+
+    def test_seconds(self):
+        from hive_slack.slack import _format_duration
+        assert _format_duration(30.0) == "30s"
+
+    def test_minutes_and_seconds(self):
+        from hive_slack.slack import _format_duration
+        assert _format_duration(90.0) == "1m 30s"
+
+    def test_exact_minutes(self):
+        from hive_slack.slack import _format_duration
+        assert _format_duration(120.0) == "2m"
+
+    def test_zero(self):
+        from hive_slack.slack import _format_duration
+        assert _format_duration(0.0) == ""
+
+
+class TestRenderTodoStatus:
+    """Test plan-mode status message rendering."""
+
+    def test_basic_rendering(self):
+        from hive_slack.slack import _render_todo_status
+        todos = [
+            {"content": "Read files", "status": "completed", "activeForm": "Reading files"},
+            {"content": "Analyze code", "status": "in_progress", "activeForm": "Analyzing code"},
+            {"content": "Write report", "status": "pending", "activeForm": "Writing report"},
+        ]
+        result = _render_todo_status(todos, "read_file", "Alpha", "45s", 0)
+        assert "✅" in result
+        assert "▸" in result
+        assert "○" in result
+        assert "Alpha" in result
+        assert "45s" in result
+        assert "1 of 3" in result
+
+    def test_truncates_many_completed(self):
+        from hive_slack.slack import _render_todo_status
+        todos = [
+            {"content": f"Task {i}", "status": "completed", "activeForm": f"Task {i}"}
+            for i in range(5)
+        ] + [
+            {"content": "Current", "status": "in_progress", "activeForm": "Working"},
+        ]
+        result = _render_todo_status(todos, "bash", "Alpha", "1m", 0)
+        assert "5 completed" in result
+        assert "▸" in result
+
+    def test_truncates_many_pending(self):
+        from hive_slack.slack import _render_todo_status
+        todos = [
+            {"content": "Done", "status": "completed", "activeForm": "Done"},
+            {"content": "Current", "status": "in_progress", "activeForm": "Working"},
+        ] + [
+            {"content": f"Pending {i}", "status": "pending", "activeForm": f"Pending {i}"}
+            for i in range(5)
+        ]
+        result = _render_todo_status(todos, "bash", "Alpha", "", 0)
+        assert "+3 more" in result
+
+    def test_shows_queued_messages(self):
+        from hive_slack.slack import _render_todo_status
+        todos = [
+            {"content": "Task", "status": "in_progress", "activeForm": "Working"},
+        ]
+        result = _render_todo_status(todos, "bash", "Alpha", "", 2)
+        assert "2 messages queued" in result
+
+    def test_no_tool_shows_thinking(self):
+        from hive_slack.slack import _render_todo_status
+        todos = [
+            {"content": "Task", "status": "in_progress", "activeForm": "Working"},
+        ]
+        result = _render_todo_status(todos, "", "Alpha", "", 0)
+        assert "Thinking" in result
+
+    def test_delegate_tool_text(self):
+        from hive_slack.slack import _render_todo_status
+        todos = [
+            {"content": "Task", "status": "in_progress", "activeForm": "Working"},
+        ]
+        result = _render_todo_status(todos, "delegate", "Alpha", "", 0)
+        assert "Delegating" in result
+
+    def test_uses_active_form_for_in_progress(self):
+        from hive_slack.slack import _render_todo_status
+        todos = [
+            {"content": "Run tests", "status": "in_progress", "activeForm": "Running tests"},
+        ]
+        result = _render_todo_status(todos, "", "Alpha", "", 0)
+        assert "Running tests" in result
+
+    def test_header_without_duration(self):
+        from hive_slack.slack import _render_todo_status
+        todos = [
+            {"content": "Task", "status": "pending", "activeForm": "Working"},
+        ]
+        result = _render_todo_status(todos, "", "Alpha", "", 0)
+        assert result.startswith("⚙️ Alpha\n")  # No duration appended

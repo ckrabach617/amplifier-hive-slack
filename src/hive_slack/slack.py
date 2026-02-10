@@ -221,6 +221,74 @@ def _friendly_tool_name(tool_name: str) -> str:
     return friendly.get(tool_name, f"Working ({tool_name})")
 
 
+def _format_duration(seconds: float) -> str:
+    """Format seconds into human-readable duration. Empty string for <10s."""
+    s = int(seconds)
+    if s < 10:
+        return ""
+    if s < 60:
+        return f"{s}s"
+    m, rem = divmod(s, 60)
+    return f"{m}m {rem}s" if rem else f"{m}m"
+
+
+def _render_todo_status(
+    todos: list[dict],
+    current_tool: str,
+    instance_name: str,
+    duration_str: str,
+    queued: int,
+) -> str:
+    """Render plan-mode status message with todo list."""
+    lines = []
+
+    # Header
+    header = f"⚙️ {instance_name}"
+    if duration_str:
+        header += f" · {duration_str}"
+    lines.append(header)
+    lines.append("───────────────────────────────────────")
+
+    # Categorize todos
+    completed = [t for t in todos if t.get("status") == "completed"]
+    in_progress = [t for t in todos if t.get("status") == "in_progress"]
+    pending = [t for t in todos if t.get("status") == "pending"]
+
+    # Completed: collapse if more than 2
+    if len(completed) > 2:
+        lines.append(f"✅  {len(completed)} completed")
+    else:
+        for t in completed:
+            lines.append(f"✅  {t.get('content', '')}")
+
+    # In-progress: always show with activeForm
+    for t in in_progress:
+        active = t.get("activeForm", t.get("content", ""))
+        lines.append(f"▸  *{active}*")
+
+    # Pending: show first 2, collapse rest
+    for t in pending[:2]:
+        lines.append(f"○  {t.get('content', '')}")
+    if len(pending) > 2:
+        lines.append(f"    +{len(pending) - 2} more")
+
+    # Footer: current tool + progress + queued
+    total = len(todos)
+    done = len(completed)
+    if current_tool == "delegate":
+        tool_text = "Delegating to agent"
+    elif current_tool:
+        tool_text = _friendly_tool_name(current_tool)
+    else:
+        tool_text = "Thinking"
+    footer = f"🔧 {tool_text} · {done} of {total} complete"
+    if queued > 0:
+        footer += f" · {queued} message{'s' if queued != 1 else ''} queued"
+    lines.append(footer)
+
+    return "\n".join(lines)
+
+
 class SlackConnector:
     """Slack Socket Mode listener + response poster.
 
@@ -435,10 +503,6 @@ class SlackConnector:
         has_cross_ref: bool = False,
     ) -> None:
         """Execute a prompt with progress indicators and message queuing."""
-        import time as _time
-
-        start_time = _time.monotonic()
-
         # React with ⏳ on the user's message
         try:
             await self._app.client.reactions_add(
@@ -470,36 +534,79 @@ class SlackConnector:
             "instance_name": instance_name,
         }
 
-        # Progress callback for service.execute()
+        # Adaptive status rendering state
+        import time as _time2
+
+        _status_todos: list[dict] | None = None  # None = simple mode
+        _status_tool: str = ""
+        _status_agent: str = ""
+        _last_status_update: float = 0.0
+        _STATUS_THROTTLE: float = 2.0
+        _start_time: float = _time2.monotonic()
+
         async def on_progress(event_type: str, data: dict) -> None:
+            nonlocal _status_todos, _status_tool, _status_agent, _last_status_update
             if not status_msg:
                 return
-            text = None
-            if event_type == "executing":
-                text = "\u2699\ufe0f Working..."
-            elif event_type in ("tool:pre", "tool:start"):
-                tool = data.get("tool", data.get("tool_name", ""))
-                friendly = _friendly_tool_name(tool)
-                text = f"\u2699\ufe0f {friendly}..."
-            elif event_type in ("tool:post", "tool:end"):
-                tool = data.get("tool", data.get("tool_name", ""))
-                friendly = _friendly_tool_name(tool)
-                text = f"\u2699\ufe0f {friendly} done. Thinking..."
-            elif event_type in ("complete", "error"):
-                return  # We handle completion below
 
-            if text:
-                queued = len(self._message_queues.get(conversation_id, []))
+            # Update state from events
+            if event_type in ("tool:pre", "tool:start"):
+                _status_tool = data.get("tool", "")
+                agent = data.get("agent", "")
+                if agent:
+                    _status_agent = agent
+            elif event_type in ("tool:post", "tool:end"):
+                todos = data.get("todos")
+                if todos:
+                    _status_todos = todos
+                # Clear tool (between tools now)
+                _status_tool = ""
+                _status_agent = ""
+            elif event_type in ("complete", "error"):
+                return  # Handled below
+
+            # Throttle updates to every 2 seconds
+            now = _time2.monotonic()
+            if now - _last_status_update < _STATUS_THROTTLE:
+                return
+            _last_status_update = now
+
+            # Render based on mode
+            duration_str = _format_duration(now - _start_time)
+            queued = len(self._message_queues.get(conversation_id, []))
+
+            if _status_todos:
+                # Plan mode: show todo list
+                text = _render_todo_status(
+                    _status_todos,
+                    _status_tool,
+                    instance.persona.name,
+                    duration_str,
+                    queued,
+                )
+            else:
+                # Simple mode: just tool name
+                if _status_tool == "delegate" and _status_agent:
+                    text = f"⚙️ Delegating to {_status_agent}..."
+                elif _status_tool:
+                    text = f"⚙️ {_friendly_tool_name(_status_tool)}..."
+                else:
+                    text = "⚙️ Working..."
+
+                if duration_str:
+                    text += f" · {duration_str}"
                 if queued:
-                    text += f" ({queued} message{'s' if queued != 1 else ''} queued)"
-                try:
-                    await self._app.client.chat_update(
-                        channel=channel,
-                        ts=status_msg,
-                        text=text,
-                    )
-                except Exception:
-                    pass  # Best effort, may hit rate limits
+                    text += f" · {queued} message{'s' if queued != 1 else ''} queued"
+
+            try:
+                logger.debug("Updating status: %s", text[:80])
+                await self._app.client.chat_update(
+                    channel=channel,
+                    ts=status_msg,
+                    text=text,
+                )
+            except Exception:
+                logger.debug("Failed to update status message", exc_info=True)
 
         # Build Slack context for session creation
         slack_context = {
@@ -540,7 +647,7 @@ class SlackConnector:
             if onboarding and hasattr(onboarding, "get_response_suffix"):
                 import asyncio as _asyncio
 
-                duration = _time.monotonic() - start_time
+                duration = _time2.monotonic() - _start_time
                 suffix = onboarding.get_response_suffix(
                     is_new_thread, duration, has_cross_ref
                 )
