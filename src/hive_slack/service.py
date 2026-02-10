@@ -257,14 +257,10 @@ class InProcessSessionManager:
                         # Fallback: check result output (for "list" action)
                         result = data.get("result", {})
                         output = (
-                            result.get("output", {})
-                            if isinstance(result, dict)
-                            else {}
+                            result.get("output", {}) if isinstance(result, dict) else {}
                         )
                         todos = (
-                            output.get("todos")
-                            if isinstance(output, dict)
-                            else None
+                            output.get("todos") if isinstance(output, dict) else None
                         )
                     if todos:
                         payload["todos"] = todos
