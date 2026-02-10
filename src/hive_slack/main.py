@@ -62,13 +62,20 @@ async def run(config_path: str) -> None:
     )
     logger.info("Connecting to Slack with instances: %s", instance_names)
 
+    connector_task: asyncio.Task[None] | None = None
+    watchdog_task: asyncio.Task[None] | None = None
     try:
-        asyncio.create_task(connector.start())
+        connector_task = asyncio.create_task(connector.start())
+        watchdog_task = asyncio.create_task(connector.run_watchdog())
         await stop_event.wait()
     except Exception:
         logger.exception("Unexpected error")
     finally:
         logger.info("Shutting down...")
+        if watchdog_task is not None:
+            watchdog_task.cancel()
+        if connector_task is not None:
+            connector_task.cancel()
         await connector.stop()
         await service.stop()
         logger.info("Shutdown complete")

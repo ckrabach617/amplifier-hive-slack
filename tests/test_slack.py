@@ -1,5 +1,6 @@
 """Tests for SlackConnector."""
 
+import asyncio
 import time
 
 import pytest
@@ -1936,3 +1937,187 @@ class TestRenderTodoStatus:
         ]
         result = _render_todo_status(todos, "", "Alpha", "", 0)
         assert result.startswith("⚙️ Alpha\n")  # No duration appended
+
+
+class TestReconnect:
+    """Test the reconnect method for refreshing Socket Mode connections."""
+
+    @pytest.mark.asyncio
+    async def test_reconnect_closes_old_and_opens_new(self):
+        """Reconnect closes the old handler and creates a fresh one."""
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        connector._handler = AsyncMock()
+        connector._app = MagicMock()
+
+        with patch("hive_slack.slack.AsyncSocketModeHandler") as MockHandler:
+            new_handler = AsyncMock()
+            MockHandler.return_value = new_handler
+
+            await connector.reconnect()
+
+            # New handler was created with correct args
+            MockHandler.assert_called_once_with(connector._app, config.slack.app_token)
+            # New handler was connected
+            new_handler.connect_async.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_reconnect_survives_close_error(self):
+        """If closing the old handler fails, reconnect still creates a new one."""
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        old_handler = AsyncMock()
+        old_handler.close_async.side_effect = RuntimeError("socket gone")
+        connector._handler = old_handler
+        connector._app = MagicMock()
+
+        with patch("hive_slack.slack.AsyncSocketModeHandler") as MockHandler:
+            new_handler = AsyncMock()
+            MockHandler.return_value = new_handler
+
+            await connector.reconnect()
+
+            # Should still succeed despite close error
+            new_handler.connect_async.assert_called_once()
+
+
+class TestConnectionWatchdog:
+    """Test the connection watchdog for suspend/resume detection."""
+
+    @pytest.mark.asyncio
+    async def test_detects_time_jump_and_reconnects(self):
+        """A wall-clock jump triggers reconnect (simulates OS suspend/resume)."""
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        connector.reconnect = AsyncMock()
+
+        # time.time() is called once for init (last_wall) and once per loop
+        # iteration (now_wall). A 300s jump between init and first loop tick
+        # with near-zero monotonic elapsed triggers the reconnect.
+        # Call sequence: init=1000, after first sleep=1300 (jumped!)
+        wall_times = [1000.0, 1300.0]
+        time_call = 0
+
+        def fake_time():
+            nonlocal time_call
+            idx = min(time_call, len(wall_times) - 1)
+            time_call += 1
+            return wall_times[idx]
+
+        sleep_count = 0
+
+        async def fake_sleep(_interval):
+            nonlocal sleep_count
+            sleep_count += 1
+            # Let the first sleep pass so the jump detection runs,
+            # then cancel on the second to exit the loop.
+            if sleep_count >= 2:
+                raise asyncio.CancelledError
+
+        with (
+            patch("asyncio.sleep", side_effect=fake_sleep),
+            patch("time.time", side_effect=fake_time),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await connector.run_watchdog(interval=15.0)
+
+        connector.reconnect.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_no_reconnect_on_normal_tick(self):
+        """Normal ticks without time jumps do not trigger reconnect."""
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        connector.reconnect = AsyncMock()
+
+        iteration = 0
+
+        async def fake_sleep(_interval):
+            nonlocal iteration
+            iteration += 1
+            if iteration >= 2:
+                raise asyncio.CancelledError
+
+        with patch("asyncio.sleep", side_effect=fake_sleep):
+            with pytest.raises(asyncio.CancelledError):
+                await connector.run_watchdog(interval=15.0)
+
+        connector.reconnect.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_health_check_triggers_after_8_intervals(self):
+        """auth.test health check fires every 8 intervals (~2 minutes)."""
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        connector.reconnect = AsyncMock()
+        connector._app = AsyncMock()
+        connector._app.client.auth_test = AsyncMock()
+
+        iteration = 0
+
+        async def fake_sleep(_interval):
+            nonlocal iteration
+            iteration += 1
+            if iteration >= 9:
+                raise asyncio.CancelledError
+
+        with patch("asyncio.sleep", side_effect=fake_sleep):
+            with pytest.raises(asyncio.CancelledError):
+                await connector.run_watchdog(interval=15.0)
+
+        # auth.test should have been called once (at iteration 8)
+        connector._app.client.auth_test.assert_called_once()
+        # But no reconnect (health check passed)
+        connector.reconnect.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_health_check_failure_triggers_reconnect(self):
+        """Failed auth.test triggers reconnect."""
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        connector.reconnect = AsyncMock()
+        connector._app = AsyncMock()
+        connector._app.client.auth_test = AsyncMock(
+            side_effect=Exception("connection lost")
+        )
+
+        iteration = 0
+
+        async def fake_sleep(_interval):
+            nonlocal iteration
+            iteration += 1
+            if iteration >= 9:
+                raise asyncio.CancelledError
+
+        with patch("asyncio.sleep", side_effect=fake_sleep):
+            with pytest.raises(asyncio.CancelledError):
+                await connector.run_watchdog(interval=15.0)
+
+        # Health check failed, so reconnect should have been called
+        connector.reconnect.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_reconnect_failure_does_not_crash_watchdog(self):
+        """If reconnect raises, the watchdog continues running."""
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        connector.reconnect = AsyncMock(side_effect=RuntimeError("reconnect failed"))
+        connector._app = AsyncMock()
+        connector._app.client.auth_test = AsyncMock(
+            side_effect=Exception("connection lost")
+        )
+
+        iteration = 0
+
+        async def fake_sleep(_interval):
+            nonlocal iteration
+            iteration += 1
+            if iteration >= 17:
+                raise asyncio.CancelledError  # Let it run past 2 health checks
+
+        with patch("asyncio.sleep", side_effect=fake_sleep):
+            with pytest.raises(asyncio.CancelledError):
+                await connector.run_watchdog(interval=15.0)
+
+        # Should have attempted reconnect twice (at iteration 8 and 16)
+        assert connector.reconnect.call_count == 2
