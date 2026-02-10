@@ -10,6 +10,7 @@ from nicegui import ui
 
 import hive_slack.admin as admin_state  # noqa: F401
 from hive_slack.admin.shared import admin_layout
+from hive_slack.admin.auth import require_auth
 
 # Ring buffer for log records
 _log_buffer: deque[dict] = deque(maxlen=2000)
@@ -40,6 +41,8 @@ logging.getLogger().addHandler(_ring_handler)
 @ui.page("/admin/logs")
 def logs_page() -> None:
     """Render the live log viewer page."""
+    if not require_auth():
+        return
     admin_layout("Logs")
 
     with ui.column().classes("w-full max-w-5xl mx-auto p-4 gap-4"):

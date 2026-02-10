@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 import time
 
-from nicegui import app, ui
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +31,15 @@ def create_admin_app(service, connector, config) -> None:
     _connector = connector
     _config = config
     _start_time = time.time()
+
+    # Set up authentication (login page + session storage)
+    from hive_slack.admin.auth import is_auth_enabled, setup_login_page
+
+    setup_login_page()
+    if is_auth_enabled():
+        logger.info("Admin UI authentication enabled")
+    else:
+        logger.info("Admin UI authentication disabled (no ADMIN_PASSWORD_HASH set)")
 
     # Import pages (registers routes)
     from hive_slack.admin import configuration  # noqa: F401

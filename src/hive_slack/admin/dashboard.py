@@ -9,6 +9,7 @@ from nicegui import ui
 
 import hive_slack.admin as admin_state
 from hive_slack.admin.shared import admin_layout, format_uptime
+from hive_slack.admin.auth import require_auth
 
 
 # Ring buffer for recent log errors
@@ -37,6 +38,8 @@ logging.getLogger().addHandler(_error_handler)
 @ui.page("/admin")
 def dashboard_page() -> None:
     """Render the dashboard page."""
+    if not require_auth():
+        return
     admin_layout("Dashboard")
 
     service = admin_state._service

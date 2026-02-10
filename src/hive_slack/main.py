@@ -153,6 +153,11 @@ def run_with_admin(config_path: str) -> None:
         if service:
             await service.stop()
 
+    # Storage secret for NiceGUI session cookies (auth)
+    storage_secret = os.environ.get(
+        "ADMIN_STORAGE_SECRET", "hive-slack-admin-default-secret"
+    )
+
     logger.info("Starting with admin UI on port %d", port)
     ui.run(
         port=port,
@@ -160,6 +165,7 @@ def run_with_admin(config_path: str) -> None:
         favicon="🐝",
         show=False,  # Don't auto-open browser
         reload=False,  # Don't watch for file changes
+        storage_secret=storage_secret,
     )
 
 

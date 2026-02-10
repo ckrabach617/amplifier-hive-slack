@@ -8,12 +8,15 @@ from nicegui import ui
 
 import hive_slack.admin as admin_state
 from hive_slack.admin.shared import admin_layout
+from hive_slack.admin.auth import require_auth
 from hive_slack.setup import SLACK_MANIFEST, _generate_manifest_url
 
 
 @ui.page("/admin/slack")
 def slack_setup_page() -> None:
     """Render the Slack setup page."""
+    if not require_auth():
+        return
     admin_layout("Slack")
 
     connector = admin_state._connector

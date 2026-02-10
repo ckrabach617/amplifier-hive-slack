@@ -9,6 +9,7 @@ from nicegui import ui
 
 import hive_slack.admin as admin_state
 from hive_slack.admin.shared import admin_layout
+from hive_slack.admin.auth import require_auth
 
 
 def _mask_key(key: str) -> str:
@@ -43,6 +44,8 @@ def _format_size(size: int) -> str:
 @ui.page("/admin/config")
 def config_page() -> None:
     """Render the configuration viewer page."""
+    if not require_auth():
+        return
     admin_layout("Configuration")
 
     config = admin_state._config
