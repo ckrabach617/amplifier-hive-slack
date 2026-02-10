@@ -477,10 +477,14 @@ class SlackConnector:
             text = None
             if event_type == "executing":
                 text = "\u2699\ufe0f Working..."
-            elif event_type == "tool:pre":
-                tool = data.get("tool", "")
+            elif event_type in ("tool:pre", "tool:start"):
+                tool = data.get("tool", data.get("tool_name", ""))
                 friendly = _friendly_tool_name(tool)
                 text = f"\u2699\ufe0f {friendly}..."
+            elif event_type in ("tool:post", "tool:end"):
+                tool = data.get("tool", data.get("tool_name", ""))
+                friendly = _friendly_tool_name(tool)
+                text = f"\u2699\ufe0f {friendly} done. Thinking..."
             elif event_type in ("complete", "error"):
                 return  # We handle completion below
 
@@ -853,8 +857,10 @@ class SlackConnector:
             channel_name = channel_config.name
 
             # Parse for explicit addressing
-            addressed_name, addressed_prompt, was_explicit = self._parse_instance_prefix(
-                text, self._config.instance_names, self._config.default_instance
+            addressed_name, addressed_prompt, was_explicit = (
+                self._parse_instance_prefix(
+                    text, self._config.instance_names, self._config.default_instance
+                )
             )
             owner = self._get_thread_owner(conversation_id)
 
@@ -1181,9 +1187,7 @@ class SlackConnector:
 
         # Get channel name for context
         channel_config = await self._get_channel_config(channel)
-        prompt = self._build_prompt(
-            original_text, user, channel, channel_config.name
-        )
+        prompt = self._build_prompt(original_text, user, channel, channel_config.name)
 
         logger.info(
             "Emoji summon: %s summoned %s on %s",
@@ -1263,9 +1267,7 @@ class SlackConnector:
 
             async def _run_one(name: str) -> tuple[str, str]:
                 rt_prompt = self._build_roundtable_prompt(base_prompt, name)
-                response = await self._service.execute(
-                    name, conversation_id, rt_prompt
-                )
+                response = await self._service.execute(name, conversation_id, rt_prompt)
                 return name, response
 
             results = await asyncio.gather(
@@ -1287,9 +1289,7 @@ class SlackConnector:
             # Delete status message
             if status_msg:
                 try:
-                    await self._app.client.chat_delete(
-                        channel=channel, ts=status_msg
-                    )
+                    await self._app.client.chat_delete(channel=channel, ts=status_msg)
                 except Exception:
                     pass
 
@@ -1300,7 +1300,11 @@ class SlackConnector:
                 response_text = markdown_to_slack(text)
 
                 # Append onboarding suffix only to the first response
-                if first_posted and onboarding and hasattr(onboarding, "get_response_suffix"):
+                if (
+                    first_posted
+                    and onboarding
+                    and hasattr(onboarding, "get_response_suffix")
+                ):
                     suffix = onboarding.get_response_suffix(is_new_thread, 0.0, False)
                     if suffix:
                         response_text = f"{response_text}\n{suffix}"
@@ -1322,9 +1326,7 @@ class SlackConnector:
             logger.exception("Error in roundtable execution for %s", conversation_id)
             if status_msg:
                 try:
-                    await self._app.client.chat_delete(
-                        channel=channel, ts=status_msg
-                    )
+                    await self._app.client.chat_delete(channel=channel, ts=status_msg)
                 except Exception:
                     pass
 

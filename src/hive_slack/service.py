@@ -154,6 +154,11 @@ class InProcessSessionManager:
                 except Exception:
                     pass
 
+            # Register temporary hooks to forward tool events to on_progress
+            unregister_hooks: list[Callable[[], None]] = []
+            if on_progress:
+                unregister_hooks = self._register_progress_hooks(session, on_progress)
+
             try:
                 response = await session.execute(prompt)
             except Exception:
@@ -163,6 +168,13 @@ class InProcessSessionManager:
                     except Exception:
                         pass
                 raise
+            finally:
+                # Unregister temporary hooks
+                for unreg in unregister_hooks:
+                    try:
+                        unreg()
+                    except Exception:
+                        pass
 
             if on_progress:
                 try:
@@ -174,6 +186,61 @@ class InProcessSessionManager:
             await self._save_transcript(instance_name, conversation_id, session)
 
             return response
+
+    def _register_progress_hooks(
+        self,
+        session: object,
+        callback: Callable[[str, dict[str, Any]], Awaitable[None]],
+    ) -> list[Callable[[], None]]:
+        """Register temporary hooks on the session to forward tool events to the progress callback.
+
+        Returns a list of unregister functions to call when done.
+        """
+        coordinator = getattr(session, "coordinator", None)
+        if coordinator is None:
+            return []
+
+        hooks = coordinator.get("hooks") if hasattr(coordinator, "get") else None
+        if hooks is None or not hasattr(hooks, "register"):
+            return []
+
+        from amplifier_core.models import HookResult
+
+        unregister_fns: list[Callable[[], None]] = []
+
+        async def on_tool_pre(event_name: str, data: dict[str, Any]) -> HookResult:
+            tool_name = data.get("tool_name", "")
+            try:
+                await callback("tool:start", {"tool": tool_name})
+            except Exception:
+                pass
+            return HookResult(action="continue")
+
+        async def on_tool_post(event_name: str, data: dict[str, Any]) -> HookResult:
+            tool_name = data.get("tool_name", "")
+            try:
+                await callback("tool:end", {"tool": tool_name})
+            except Exception:
+                pass
+            return HookResult(action="continue")
+
+        try:
+            unreg = hooks.register(
+                "tool:pre", on_tool_pre, priority=999, name="_progress_pre"
+            )
+            unregister_fns.append(unreg)
+        except Exception:
+            logger.debug("Could not register tool:pre progress hook", exc_info=True)
+
+        try:
+            unreg = hooks.register(
+                "tool:post", on_tool_post, priority=999, name="_progress_post"
+            )
+            unregister_fns.append(unreg)
+        except Exception:
+            logger.debug("Could not register tool:post progress hook", exc_info=True)
+
+        return unregister_fns
 
     def inject_message(
         self, instance_name: str, conversation_id: str, content: str
