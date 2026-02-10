@@ -15,6 +15,16 @@ from hive_slack.slack import SlackConnector
 logger = logging.getLogger(__name__)
 
 
+def _nicegui_available() -> bool:
+    """Check if NiceGUI is installed."""
+    try:
+        import nicegui  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 async def run(config_path: str) -> None:
     """Load config, start service, connect to Slack, run until interrupted."""
     logging.basicConfig(
@@ -81,6 +91,78 @@ async def run(config_path: str) -> None:
         logger.info("Shutdown complete")
 
 
+def run_with_admin(config_path: str) -> None:
+    """Run the bot with the admin web UI (NiceGUI owns the event loop)."""
+    from nicegui import app as nicegui_app, ui
+
+    port = int(os.environ.get("ADMIN_PORT", "8080"))
+    config = None
+    service = None
+    connector = None
+
+    @nicegui_app.on_startup
+    async def startup():
+        nonlocal config, service, connector
+
+        logging.basicConfig(
+            level=getattr(
+                logging,
+                os.environ.get("LOG_LEVEL", "INFO").upper(),
+                logging.INFO,
+            ),
+            format="%(asctime)s %(name)s %(levelname)s %(message)s",
+            datefmt="%H:%M:%S",
+        )
+
+        config = HiveSlackConfig.from_yaml(config_path)
+
+        # Start service
+        service = InProcessSessionManager(config)
+        await service.start()
+
+        for name, inst in config.instances.items():
+            logger.info(
+                "Instance '%s' ready (%s, bundle=%s)",
+                name,
+                inst.persona.name,
+                inst.bundle,
+            )
+        logger.info("Default instance: %s", config.default_instance)
+
+        # Start connector
+        connector = SlackConnector(config, service)
+        instance_names = ", ".join(
+            f"{inst.persona.name} {inst.persona.emoji}"
+            for inst in config.instances.values()
+        )
+        logger.info("Connecting to Slack with instances: %s", instance_names)
+
+        # Initialize admin UI
+        from hive_slack.admin import create_admin_app
+
+        create_admin_app(service, connector, config)
+
+        # Start connector and watchdog as background tasks
+        asyncio.create_task(connector.start())
+        asyncio.create_task(connector.run_watchdog())
+
+    @nicegui_app.on_shutdown
+    async def shutdown():
+        if connector:
+            await connector.stop()
+        if service:
+            await service.stop()
+
+    logger.info("Starting with admin UI on port %d", port)
+    ui.run(
+        port=port,
+        title="Hive Slack Admin",
+        favicon="🐝",
+        show=False,  # Don't auto-open browser
+        reload=False,  # Don't watch for file changes
+    )
+
+
 def cli() -> None:
     """CLI entry point with subcommands."""
     args = sys.argv[1:]
@@ -88,7 +170,13 @@ def cli() -> None:
     if not args or args[0] not in ("service", "slack", "setup"):
         # Default: run the bot (backward compatible)
         config_path = args[0] if args else "config/example.yaml"
-        asyncio.run(run(config_path))
+
+        no_admin = "--no-admin" in sys.argv
+
+        if not no_admin and _nicegui_available():
+            run_with_admin(config_path)
+        else:
+            asyncio.run(run(config_path))
         return
 
     command = args[0]
