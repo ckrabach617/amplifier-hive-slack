@@ -19,6 +19,12 @@ logger = logging.getLogger(__name__)
 
 SESSIONS_DIR = Path("~/.amplifier/hive/sessions").expanduser()
 
+# Vendored modules — bundled with this project so we don't depend on the shared
+# Amplifier cache (which can be cleared by other Amplifier installations).
+# service.py lives at src/hive_slack/service.py -> project root is 3 levels up.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_LOOP_INTERACTIVE_SOURCE = str(_PROJECT_ROOT / "modules" / "loop-interactive")
+
 
 class InProcessSessionManager:
     """Manages Amplifier sessions in-process using amplifier-core directly.
@@ -72,7 +78,7 @@ class InProcessSessionManager:
                 session={
                     "orchestrator": {
                         "module": "loop-interactive",
-                        "source": "git+https://github.com/bkrabach/amplifier-module-loop-interactive@main",
+                        "source": _LOOP_INTERACTIVE_SOURCE,
                         "config": {"extended_thinking": True},
                     },
                 },
