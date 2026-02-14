@@ -23,6 +23,7 @@ from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 
 from hive_slack.config import HiveSlackConfig
+from hive_slack.service import conversation_working_dir
 
 logger = logging.getLogger(__name__)
 
@@ -637,7 +638,9 @@ class SlackConnector:
                     pass
 
             # Process outbox (file sharing)
-            working_dir = Path(instance.working_dir).expanduser()
+            working_dir = conversation_working_dir(
+                instance.working_dir, conversation_id
+            )
             await self._process_outbox(working_dir, channel, thread_ts, instance)
 
             # Post final response with persona
@@ -759,7 +762,9 @@ class SlackConnector:
         files = event.get("files", [])
         file_descriptions = None
         if files:
-            working_dir = Path(instance.working_dir).expanduser()
+            working_dir = conversation_working_dir(
+                instance.working_dir, conversation_id
+            )
             working_dir.mkdir(parents=True, exist_ok=True)
             desc_lines = []
             for file_info in files:
@@ -984,11 +989,12 @@ class SlackConnector:
                 # Download files first
                 file_descriptions = None
                 if files:
-                    working_dir_path = Path(
+                    working_dir_path = conversation_working_dir(
                         self._config.get_instance(
                             self._config.default_instance
-                        ).working_dir
-                    ).expanduser()
+                        ).working_dir,
+                        conversation_id,
+                    )
                     working_dir_path.mkdir(parents=True, exist_ok=True)
                     desc_lines = []
                     for file_info in files:
@@ -1081,7 +1087,9 @@ class SlackConnector:
         # Download any uploaded files
         file_descriptions = None
         if files:
-            working_dir = Path(instance.working_dir).expanduser()
+            working_dir = conversation_working_dir(
+                instance.working_dir, conversation_id
+            )
             working_dir.mkdir(parents=True, exist_ok=True)
             desc_lines = []
             for file_info in files:
