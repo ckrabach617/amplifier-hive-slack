@@ -503,6 +503,16 @@ class SlackConnector:
         has_cross_ref: bool = False,
     ) -> None:
         """Execute a prompt with progress indicators and message queuing."""
+        # Track this execution BEFORE any awaits to prevent race conditions
+        # (two rapid messages could both pass the active_executions check otherwise)
+        self._active_executions[conversation_id] = {
+            "status_ts": None,
+            "user_ts": user_ts,
+            "channel": channel,
+            "thread_ts": thread_ts,
+            "instance_name": instance_name,
+        }
+
         # React with ⏳ on the user's message
         try:
             await self._app.client.reactions_add(
@@ -525,14 +535,9 @@ class SlackConnector:
         except Exception:
             logger.debug("Could not post status message")
 
-        # Track this execution
-        self._active_executions[conversation_id] = {
-            "status_ts": status_msg,
-            "user_ts": user_ts,
-            "channel": channel,
-            "thread_ts": thread_ts,
-            "instance_name": instance_name,
-        }
+        # Update tracking with actual status message timestamp
+        if conversation_id in self._active_executions:
+            self._active_executions[conversation_id]["status_ts"] = status_msg
 
         # Adaptive status rendering state
         import time as _time2
@@ -1346,6 +1351,15 @@ class SlackConnector:
         """
         import asyncio
 
+        # Track this execution BEFORE any awaits to prevent race conditions
+        self._active_executions[conversation_id] = {
+            "status_ts": None,
+            "user_ts": user_ts,
+            "channel": channel,
+            "thread_ts": thread_ts,
+            "instance_name": "_ROUNDTABLE",
+        }
+
         # React with ⏳ on the user's message
         try:
             await self._app.client.reactions_add(
@@ -1448,8 +1462,29 @@ class SlackConnector:
             except Exception:
                 pass
 
+            # Clear active execution tracking
+            self._active_executions.pop(conversation_id, None)
+
             # Record thread as roundtable-owned
             self._set_thread_owner(conversation_id, "_ROUNDTABLE")
+
+            # Process queued messages
+            queued = self._message_queues.pop(conversation_id, [])
+            if queued:
+                combined = "\n".join(f"- {m}" for m in queued)
+                batch_prompt = (
+                    "[You completed a previous task. The user sent additional "
+                    "messages while you were working. Please address these:]\n"
+                    f"{combined}"
+                )
+                await self._execute_roundtable(
+                    conversation_id,
+                    batch_prompt,
+                    channel,
+                    thread_ts,
+                    user_ts,
+                    say,
+                )
 
     async def _handle_approval_action(self, ack, body) -> None:
         """Handle Block Kit button clicks for the approval system."""
