@@ -955,7 +955,13 @@ class SlackConnector:
             instance_name, prompt, _ = self._parse_instance_prefix(
                 text, self._config.instance_names, self._config.default_instance
             )
-            conversation_id = f"dm:{user}"
+            # For DM threads, isolate by thread_ts to prevent session mixing;
+            # for top-level DMs (no thread), share one session per user
+            dm_thread = event.get("thread_ts")
+            if dm_thread:
+                conversation_id = f"dm:{user}:{dm_thread}"
+            else:
+                conversation_id = f"dm:{user}"
             channel_name = ""  # Will produce DM context in _build_prompt
         else:
             # Get channel config from topic
