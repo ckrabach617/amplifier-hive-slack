@@ -398,6 +398,19 @@ class InProcessSessionManager:
                             exc_info=True,
                         )
 
+            # Mount media tools (image analysis, PDF extraction)
+            from hive_slack.media_tools import create_media_tools
+
+            for tool in create_media_tools():
+                try:
+                    await session.coordinator.mount("tools", tool)
+                except Exception:
+                    logger.debug(
+                        "Could not mount media tool %s",
+                        getattr(tool, "name", "?"),
+                        exc_info=True,
+                    )
+
             self._sessions[session_key] = session
         return self._sessions[session_key]
 
