@@ -1,5 +1,6 @@
 """Tests for SlackConnector."""
 
+import asyncio
 import time
 
 import pytest
@@ -1678,16 +1679,18 @@ class TestEmojiSummoning:
         connector._bot_user_id = "UBOTID"
         connector._app = AsyncMock()
         connector._app.client = AsyncMock()
-        connector._app.client.conversations_history = AsyncMock(return_value={
-            "messages": [{"text": "Check this code", "ts": "msg_ts_123"}]
-        })
+        connector._app.client.conversations_history = AsyncMock(
+            return_value={"messages": [{"text": "Check this code", "ts": "msg_ts_123"}]}
+        )
         connector._app.client.reactions_add = AsyncMock()
         connector._app.client.reactions_remove = AsyncMock()
-        connector._app.client.chat_postMessage = AsyncMock(return_value={"ts": "status_ts"})
+        connector._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "status_ts"}
+        )
         connector._app.client.chat_delete = AsyncMock()
-        connector._app.client.conversations_info = AsyncMock(return_value={
-            "channel": {"name": "general", "topic": {"value": ""}}
-        })
+        connector._app.client.conversations_info = AsyncMock(
+            return_value={"channel": {"name": "general", "topic": {"value": ""}}}
+        )
         connector._cache_timestamps["C99999"] = time.time()
         connector._channel_cache["C99999"] = ChannelConfig(name="general")
 
@@ -1755,11 +1758,13 @@ class TestRoundtable:
     async def test_pass_response_filtered(self):
         """[PASS] responses from instances are not posted."""
         mock_service = AsyncMock()
+
         # alpha passes, beta responds
         async def mock_execute(instance, conv, prompt, **kwargs):
             if instance == "alpha":
                 return "[PASS]"
             return "Here's my perspective on caching..."
+
         mock_service.execute = mock_execute
 
         config = make_config()
@@ -1769,13 +1774,20 @@ class TestRoundtable:
         connector._app.client = AsyncMock()
         connector._app.client.reactions_add = AsyncMock()
         connector._app.client.reactions_remove = AsyncMock()
-        connector._app.client.chat_postMessage = AsyncMock(return_value={"ts": "status_ts"})
+        connector._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "status_ts"}
+        )
         connector._app.client.chat_delete = AsyncMock()
 
         mock_say = AsyncMock(return_value={"ts": "resp_ts"})
 
         await connector._execute_roundtable(
-            "C1:t1", "What is caching?", "C1", "t1", "user_ts", mock_say,
+            "C1:t1",
+            "What is caching?",
+            "C1",
+            "t1",
+            "user_ts",
+            mock_say,
         )
 
         # say should be called only once (beta's response, not alpha's [PASS])
@@ -1796,13 +1808,20 @@ class TestRoundtable:
         connector._app.client = AsyncMock()
         connector._app.client.reactions_add = AsyncMock()
         connector._app.client.reactions_remove = AsyncMock()
-        connector._app.client.chat_postMessage = AsyncMock(return_value={"ts": "status_ts"})
+        connector._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "status_ts"}
+        )
         connector._app.client.chat_delete = AsyncMock()
 
         mock_say = AsyncMock()
 
         await connector._execute_roundtable(
-            "C1:t1", "Thanks!", "C1", "t1", "user_ts", mock_say,
+            "C1:t1",
+            "Thanks!",
+            "C1",
+            "t1",
+            "user_ts",
+            mock_say,
         )
 
         # say should NOT be called (all passed)
@@ -1821,11 +1840,18 @@ class TestRoundtable:
         connector._app.client = AsyncMock()
         connector._app.client.reactions_add = AsyncMock()
         connector._app.client.reactions_remove = AsyncMock()
-        connector._app.client.chat_postMessage = AsyncMock(return_value={"ts": "status_ts"})
+        connector._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "status_ts"}
+        )
         connector._app.client.chat_delete = AsyncMock()
 
         await connector._execute_roundtable(
-            "C1:t1", "Hello", "C1", "t1", "user_ts", AsyncMock(),
+            "C1:t1",
+            "Hello",
+            "C1",
+            "t1",
+            "user_ts",
+            AsyncMock(),
         )
 
         assert connector._get_thread_owner("C1:t1") == "_ROUNDTABLE"
@@ -1836,22 +1862,27 @@ class TestFormatDuration:
 
     def test_under_10_seconds_empty(self):
         from hive_slack.slack import _format_duration
+
         assert _format_duration(5.0) == ""
 
     def test_seconds(self):
         from hive_slack.slack import _format_duration
+
         assert _format_duration(30.0) == "30s"
 
     def test_minutes_and_seconds(self):
         from hive_slack.slack import _format_duration
+
         assert _format_duration(90.0) == "1m 30s"
 
     def test_exact_minutes(self):
         from hive_slack.slack import _format_duration
+
         assert _format_duration(120.0) == "2m"
 
     def test_zero(self):
         from hive_slack.slack import _format_duration
+
         assert _format_duration(0.0) == ""
 
 
@@ -1860,10 +1891,23 @@ class TestRenderTodoStatus:
 
     def test_basic_rendering(self):
         from hive_slack.slack import _render_todo_status
+
         todos = [
-            {"content": "Read files", "status": "completed", "activeForm": "Reading files"},
-            {"content": "Analyze code", "status": "in_progress", "activeForm": "Analyzing code"},
-            {"content": "Write report", "status": "pending", "activeForm": "Writing report"},
+            {
+                "content": "Read files",
+                "status": "completed",
+                "activeForm": "Reading files",
+            },
+            {
+                "content": "Analyze code",
+                "status": "in_progress",
+                "activeForm": "Analyzing code",
+            },
+            {
+                "content": "Write report",
+                "status": "pending",
+                "activeForm": "Writing report",
+            },
         ]
         result = _render_todo_status(todos, "read_file", "Alpha", "45s", 0)
         assert "✅" in result
@@ -1875,6 +1919,7 @@ class TestRenderTodoStatus:
 
     def test_truncates_many_completed(self):
         from hive_slack.slack import _render_todo_status
+
         todos = [
             {"content": f"Task {i}", "status": "completed", "activeForm": f"Task {i}"}
             for i in range(5)
@@ -1887,11 +1932,16 @@ class TestRenderTodoStatus:
 
     def test_truncates_many_pending(self):
         from hive_slack.slack import _render_todo_status
+
         todos = [
             {"content": "Done", "status": "completed", "activeForm": "Done"},
             {"content": "Current", "status": "in_progress", "activeForm": "Working"},
         ] + [
-            {"content": f"Pending {i}", "status": "pending", "activeForm": f"Pending {i}"}
+            {
+                "content": f"Pending {i}",
+                "status": "pending",
+                "activeForm": f"Pending {i}",
+            }
             for i in range(5)
         ]
         result = _render_todo_status(todos, "bash", "Alpha", "", 0)
@@ -1899,6 +1949,7 @@ class TestRenderTodoStatus:
 
     def test_shows_queued_messages(self):
         from hive_slack.slack import _render_todo_status
+
         todos = [
             {"content": "Task", "status": "in_progress", "activeForm": "Working"},
         ]
@@ -1907,6 +1958,7 @@ class TestRenderTodoStatus:
 
     def test_no_tool_shows_thinking(self):
         from hive_slack.slack import _render_todo_status
+
         todos = [
             {"content": "Task", "status": "in_progress", "activeForm": "Working"},
         ]
@@ -1915,6 +1967,7 @@ class TestRenderTodoStatus:
 
     def test_delegate_tool_text(self):
         from hive_slack.slack import _render_todo_status
+
         todos = [
             {"content": "Task", "status": "in_progress", "activeForm": "Working"},
         ]
@@ -1923,16 +1976,208 @@ class TestRenderTodoStatus:
 
     def test_uses_active_form_for_in_progress(self):
         from hive_slack.slack import _render_todo_status
+
         todos = [
-            {"content": "Run tests", "status": "in_progress", "activeForm": "Running tests"},
+            {
+                "content": "Run tests",
+                "status": "in_progress",
+                "activeForm": "Running tests",
+            },
         ]
         result = _render_todo_status(todos, "", "Alpha", "", 0)
         assert "Running tests" in result
 
     def test_header_without_duration(self):
         from hive_slack.slack import _render_todo_status
+
         todos = [
             {"content": "Task", "status": "pending", "activeForm": "Working"},
         ]
         result = _render_todo_status(todos, "", "Alpha", "", 0)
         assert result.startswith("⚙️ Alpha\n")  # No duration appended
+
+
+# ---------------------------------------------------------------------------
+# Connection Watchdog & Reconnect
+# ---------------------------------------------------------------------------
+
+
+class TestReconnect:
+    """Test the reconnect method for refreshing Socket Mode connections."""
+
+    @pytest.mark.asyncio
+    async def test_reconnect_closes_old_and_opens_new(self):
+        """Reconnect closes the old handler and creates a fresh one."""
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        connector._handler = AsyncMock()
+        connector._app = MagicMock()
+
+        with patch("hive_slack.slack.AsyncSocketModeHandler") as MockHandler:
+            new_handler = AsyncMock()
+            MockHandler.return_value = new_handler
+
+            await connector.reconnect()
+
+            # New handler was created with correct args
+            MockHandler.assert_called_once_with(connector._app, config.slack.app_token)
+            # New handler was connected
+            new_handler.connect_async.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_reconnect_survives_close_error(self):
+        """If closing the old handler fails, reconnect still creates a new one."""
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        old_handler = AsyncMock()
+        old_handler.close_async.side_effect = RuntimeError("socket gone")
+        connector._handler = old_handler
+        connector._app = MagicMock()
+
+        with patch("hive_slack.slack.AsyncSocketModeHandler") as MockHandler:
+            new_handler = AsyncMock()
+            MockHandler.return_value = new_handler
+
+            await connector.reconnect()
+
+            # Should still succeed despite close error
+            new_handler.connect_async.assert_called_once()
+
+
+class TestConnectionWatchdog:
+    """Test the connection watchdog for suspend/resume detection."""
+
+    @pytest.mark.asyncio
+    async def test_detects_time_jump_and_reconnects(self):
+        """A wall-clock jump triggers reconnect (simulates OS suspend/resume)."""
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        connector.reconnect = AsyncMock()
+
+        # time.time() is called once for init (last_wall) and once per loop
+        # iteration (now_wall). A 300s jump between init and first loop tick
+        # with near-zero monotonic elapsed triggers the reconnect.
+        wall_times = [1000.0, 1300.0]
+        time_call = 0
+
+        def fake_time():
+            nonlocal time_call
+            idx = min(time_call, len(wall_times) - 1)
+            time_call += 1
+            return wall_times[idx]
+
+        sleep_count = 0
+
+        async def fake_sleep(_interval):
+            nonlocal sleep_count
+            sleep_count += 1
+            if sleep_count >= 2:
+                raise asyncio.CancelledError
+
+        with (
+            patch("asyncio.sleep", side_effect=fake_sleep),
+            patch("time.time", side_effect=fake_time),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await connector.run_watchdog(interval=15.0)
+
+        connector.reconnect.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_no_reconnect_on_normal_tick(self):
+        """Normal ticks without time jumps do not trigger reconnect."""
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        connector.reconnect = AsyncMock()
+
+        iteration = 0
+
+        async def fake_sleep(_interval):
+            nonlocal iteration
+            iteration += 1
+            if iteration >= 2:
+                raise asyncio.CancelledError
+
+        with patch("asyncio.sleep", side_effect=fake_sleep):
+            with pytest.raises(asyncio.CancelledError):
+                await connector.run_watchdog(interval=15.0)
+
+        connector.reconnect.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_health_check_triggers_after_8_intervals(self):
+        """auth.test health check fires every 8 intervals (~2 minutes)."""
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        connector.reconnect = AsyncMock()
+        connector._app = AsyncMock()
+        connector._app.client.auth_test = AsyncMock()
+
+        iteration = 0
+
+        async def fake_sleep(_interval):
+            nonlocal iteration
+            iteration += 1
+            if iteration >= 9:
+                raise asyncio.CancelledError
+
+        with patch("asyncio.sleep", side_effect=fake_sleep):
+            with pytest.raises(asyncio.CancelledError):
+                await connector.run_watchdog(interval=15.0)
+
+        # auth.test should have been called once (at iteration 8)
+        connector._app.client.auth_test.assert_called_once()
+        # But no reconnect (health check passed)
+        connector.reconnect.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_health_check_failure_triggers_reconnect(self):
+        """Failed auth.test triggers reconnect."""
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        connector.reconnect = AsyncMock()
+        connector._app = AsyncMock()
+        connector._app.client.auth_test = AsyncMock(
+            side_effect=Exception("connection lost")
+        )
+
+        iteration = 0
+
+        async def fake_sleep(_interval):
+            nonlocal iteration
+            iteration += 1
+            if iteration >= 9:
+                raise asyncio.CancelledError
+
+        with patch("asyncio.sleep", side_effect=fake_sleep):
+            with pytest.raises(asyncio.CancelledError):
+                await connector.run_watchdog(interval=15.0)
+
+        # Health check failed, so reconnect should have been called
+        connector.reconnect.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_reconnect_failure_does_not_crash_watchdog(self):
+        """If reconnect raises, the watchdog continues running."""
+        config = make_config()
+        connector = SlackConnector(config, AsyncMock())
+        connector.reconnect = AsyncMock(side_effect=RuntimeError("reconnect failed"))
+        connector._app = AsyncMock()
+        connector._app.client.auth_test = AsyncMock(
+            side_effect=Exception("connection lost")
+        )
+
+        iteration = 0
+
+        async def fake_sleep(_interval):
+            nonlocal iteration
+            iteration += 1
+            if iteration >= 17:
+                raise asyncio.CancelledError  # Let it run past 2 health checks
+
+        with patch("asyncio.sleep", side_effect=fake_sleep):
+            with pytest.raises(asyncio.CancelledError):
+                await connector.run_watchdog(interval=15.0)
+
+        # Should have attempted reconnect twice (at iteration 8 and 16)
+        assert connector.reconnect.call_count == 2
