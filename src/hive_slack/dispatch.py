@@ -13,6 +13,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from hive_slack.task_store import TaskStore
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,6 +39,7 @@ class DispatchWorkerTool:
         self._working_dir = Path(working_dir).expanduser()
         self._director_conversation_id = director_conversation_id
         self._worker_counter = 0
+        self._store = TaskStore(self._working_dir / "TASKS.md")
 
     @property
     def name(self) -> str:
@@ -91,7 +94,7 @@ class DispatchWorkerTool:
         self._worker_counter += 1
 
         # Add to TASKS.md as Active immediately
-        self._add_task_active(task_id, task)
+        await self._store.add_active(task_id, task)
 
         # Launch background task
         asyncio.create_task(
@@ -107,98 +110,6 @@ class DispatchWorkerTool:
                 "confirm what you dispatched and ask what else they need."
             ),
         )
-
-    def _add_task_active(self, task_id: str, description: str) -> None:
-        """Add a task to the Active section of TASKS.md."""
-        from datetime import date
-
-        tasks_path = self._working_dir / "TASKS.md"
-        try:
-            content = tasks_path.read_text() if tasks_path.exists() else ""
-            entry = (
-                f"- id: {task_id}\n"
-                f"  description: {description[:200]}\n"
-                f"  started: {date.today().isoformat()}\n"
-                f"  status: worker dispatched\n"
-            )
-            # Insert after ## Active heading
-            if "## Active" in content:
-                content = content.replace("## Active\n", f"## Active\n{entry}\n", 1)
-            else:
-                content = f"## Active\n{entry}\n{content}"
-            tasks_path.write_text(content)
-            logger.info("Added %s to TASKS.md Active", task_id)
-        except Exception:
-            logger.warning("Could not update TASKS.md for %s", task_id, exc_info=True)
-
-    def _complete_task(self, task_id: str, summary: str) -> None:
-        """Move a task from Active to Done in TASKS.md with a summary."""
-        from datetime import date
-
-        tasks_path = self._working_dir / "TASKS.md"
-        try:
-            content = tasks_path.read_text() if tasks_path.exists() else ""
-
-            # Remove from Active section (find the entry block)
-            lines = content.split("\n")
-            new_lines = []
-            skip = False
-            for line in lines:
-                if line.strip().startswith(f"- id: {task_id}"):
-                    skip = True
-                    continue
-                if skip and line.strip().startswith("- id: "):
-                    skip = False
-                if skip and (
-                    line.strip().startswith("description:")
-                    or line.strip().startswith("started:")
-                    or line.strip().startswith("status:")
-                ):
-                    continue
-                skip = False
-                new_lines.append(line)
-
-            content = "\n".join(new_lines)
-
-            # Add to Done section
-            done_entry = (
-                f"- id: {task_id}\n"
-                f"  completed: {date.today().isoformat()}\n"
-                f"  summary: {summary}\n"
-            )
-            if "## Done" in content:
-                # Find "## Done" with any suffix (e.g., "## Done (last 30 days)")
-                for marker in ["## Done (last 30 days)", "## Done"]:
-                    if marker in content:
-                        content = content.replace(
-                            marker + "\n", f"{marker}\n{done_entry}\n", 1
-                        )
-                        break
-            else:
-                content += f"\n## Done\n{done_entry}\n"
-
-            # Clean up blank lines
-            while "\n\n\n" in content:
-                content = content.replace("\n\n\n", "\n\n")
-
-            tasks_path.write_text(content)
-            logger.info("Moved %s to TASKS.md Done", task_id)
-        except Exception:
-            logger.warning("Could not complete %s in TASKS.md", task_id, exc_info=True)
-
-    def _fail_task(self, task_id: str, error: str) -> None:
-        """Mark a task as failed in TASKS.md Active section."""
-        tasks_path = self._working_dir / "TASKS.md"
-        try:
-            content = tasks_path.read_text() if tasks_path.exists() else ""
-            content = content.replace(
-                "  status: worker dispatched\n",
-                f"  status: failed -- {error[:200]}\n",
-                1,
-            )
-            tasks_path.write_text(content)
-        except Exception:
-            logger.warning("Could not mark %s as failed", task_id, exc_info=True)
 
     async def _run_worker(self, task: str, task_id: str) -> None:
         """Run worker session in background and write result to TASKS.md."""
@@ -220,7 +131,7 @@ class DispatchWorkerTool:
                     summary[:500] + "... [truncated -- ask Director for full result]"
                 )
 
-            self._complete_task(task_id, summary)
+            await self._store.complete_task(task_id, summary)
             logger.info("Background worker completed: %s", task_id)
 
             # Notify Director of completion
@@ -234,7 +145,7 @@ class DispatchWorkerTool:
 
         except Exception as e:
             logger.exception("Background worker failed: %s", task_id)
-            self._fail_task(task_id, str(e))
+            await self._store.fail_task(task_id, str(e))
 
             # Notify Director of failure
             self._manager.notify(
