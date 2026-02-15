@@ -198,6 +198,7 @@ class ChannelConfig:
     instance: str | None = None
     mode: str | None = None
     default: str | None = None
+    threads: str | None = None  # "off" to disable threading (replies go in-channel)
     name: str = ""  # Channel name for context enrichment
 
 
@@ -476,7 +477,7 @@ class SlackConnector:
             try:
                 await self._app.client.files_upload_v2(
                     channel=channel,
-                    thread_ts=thread_ts,
+                    thread_ts=thread_ts or None,
                     file=str(filepath),
                     title=filepath.name,
                     initial_comment=f"📎 {filepath.name}",
@@ -504,6 +505,10 @@ class SlackConnector:
         has_cross_ref: bool = False,
     ) -> None:
         """Execute a prompt with progress indicators and message queuing."""
+        # Check if this channel has progress suppressed (threads:off = Director mode)
+        channel_config = await self._get_channel_config(channel)
+        quiet_mode = channel_config.threads == "off"
+
         # React with ⏳ on the user's message
         try:
             await self._app.client.reactions_add(
@@ -514,17 +519,18 @@ class SlackConnector:
         except Exception:
             pass  # Best effort
 
-        # Post editable status message (bot's own identity, NOT persona)
+        # Post editable status message (skip in quiet mode)
         status_msg = None
-        try:
-            result = await self._app.client.chat_postMessage(
-                channel=channel,
-                thread_ts=thread_ts,
-                text="\u2699\ufe0f Working...",
-            )
-            status_msg = result.get("ts")
-        except Exception:
-            logger.debug("Could not post status message")
+        if not quiet_mode:
+            try:
+                result = await self._app.client.chat_postMessage(
+                    channel=channel,
+                    thread_ts=thread_ts or None,
+                    text="\u2699\ufe0f Working...",
+                )
+                status_msg = result.get("ts")
+            except Exception:
+                logger.debug("Could not post status message")
 
         # Track this execution
         self._active_executions[conversation_id] = {
@@ -659,7 +665,7 @@ class SlackConnector:
 
             result = await say(
                 text=response_text,
-                thread_ts=thread_ts,
+                thread_ts=thread_ts or None,
                 username=instance.persona.name,
                 icon_emoji=instance.persona.emoji,
             )
@@ -679,7 +685,7 @@ class SlackConnector:
                     pass
             await say(
                 text="Something's not working on my end. Try again?",
-                thread_ts=thread_ts,
+                thread_ts=thread_ts or None,
                 username=instance.persona.name,
                 icon_emoji=instance.persona.emoji,
             )
@@ -732,7 +738,9 @@ class SlackConnector:
             return
 
         channel = event.get("channel", "")
-        thread_ts = event.get("thread_ts") or event.get("ts", "")
+        user_ts = event.get("ts", "")
+        # Default: reply in a thread from the original message
+        thread_ts = event.get("thread_ts") or user_ts
         user = event.get("user", "unknown")
 
         # Route to instance: parse name prefix or use default
@@ -741,7 +749,15 @@ class SlackConnector:
         )
         instance = self._config.get_instance(instance_name)
 
-        conversation_id = f"{channel}:{thread_ts}"
+        # Check channel config for Director mode (threads:off)
+        channel_config = await self._get_channel_config(channel)
+
+        # In Director mode (threads:off), use a stable conversation_id so the
+        # session persists across messages. Otherwise, key by message ts.
+        if channel_config.threads == "off":
+            conversation_id = f"{channel}:director"
+        else:
+            conversation_id = f"{channel}:{event.get('thread_ts') or user_ts}"
 
         # Onboarding
         from hive_slack.onboarding import UserOnboarding
@@ -774,8 +790,10 @@ class SlackConnector:
                     "[User uploaded files:\n" + "\n".join(desc_lines) + "]"
                 )
 
-        # Get channel name for context enrichment
-        channel_config = await self._get_channel_config(channel)
+        # No-thread mode: replies go in-channel instead of threads
+        if channel_config.threads == "off":
+            thread_ts = ""
+
         prompt = self._build_prompt(
             prompt, user, channel, channel_config.name, file_descriptions
         )
@@ -945,7 +963,9 @@ class SlackConnector:
             return
 
         channel = event.get("channel", "")
-        thread_ts = event.get("thread_ts") or event.get("ts", "")
+        user_ts = event.get("ts", "")
+        # Default: reply in a thread from the original message
+        thread_ts = event.get("thread_ts") or user_ts
         user = event.get("user", "unknown")
         channel_type = event.get("channel_type", "")
 
@@ -961,7 +981,12 @@ class SlackConnector:
         else:
             # Get channel config from topic
             channel_config = await self._get_channel_config(channel)
-            conversation_id = f"{channel}:{thread_ts}"
+            # In Director mode (threads:off), use a stable conversation_id
+            # so the session persists across messages
+            if channel_config.threads == "off":
+                conversation_id = f"{channel}:director"
+            else:
+                conversation_id = f"{channel}:{event.get('thread_ts') or user_ts}"
             channel_name = channel_config.name
 
             # Parse for explicit addressing
@@ -1058,6 +1083,10 @@ class SlackConnector:
             else:
                 # Unconfigured channel: ignore non-mention messages
                 return
+
+            # No-thread mode: replies go in-channel instead of threads
+            if channel_config.threads == "off":
+                thread_ts = ""
 
         # Verify instance exists
         try:
@@ -1527,6 +1556,8 @@ class SlackConnector:
                 config.mode = value
             elif key == "default" and value in known_instances:
                 config.default = value
+            elif key == "threads" and value in ("off",):
+                config.threads = value
 
         return config
 

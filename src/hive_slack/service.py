@@ -86,6 +86,17 @@ class InProcessSessionManager:
             bundle = bundle.compose(orchestrator_overlay)
             logger.info("Using loop-interactive orchestrator (injection support)")
 
+            # Compose recipes behavior for Tier 3 staged approval workflows
+            try:
+                recipes_behavior = await load_bundle(
+                    "git+https://github.com/microsoft/amplifier-bundle-recipes@main"
+                    "#subdirectory=behaviors/recipes.yaml"
+                )
+                bundle = bundle.compose(recipes_behavior)
+                logger.info("Composed recipes behavior (Tier 3 approval gates)")
+            except Exception:
+                logger.warning("Could not load recipes behavior", exc_info=True)
+
             logger.info("Preparing bundle '%s'...", bundle_name)
             self._prepared[bundle_name] = await bundle.prepare()
 
@@ -387,6 +398,7 @@ class InProcessSessionManager:
             # Mount Slack tools post-creation
             if slack_context:
                 from hive_slack.tools import create_slack_tools
+                from hive_slack.dispatch import DispatchWorkerTool
 
                 client = slack_context["client"]
                 channel = slack_context.get("channel", "")
@@ -394,6 +406,16 @@ class InProcessSessionManager:
                 user_ts = slack_context.get("user_ts", "")
 
                 tools = create_slack_tools(client, channel, thread_ts, user_ts)
+
+                # Add dispatch_worker tool for background task execution
+                tools.append(
+                    DispatchWorkerTool(
+                        session_manager=self,
+                        instance_name=instance_name,
+                        working_dir=instance.working_dir,
+                    )
+                )
+
                 for tool in tools:
                     try:
                         await session.coordinator.mount("tools", tool)

@@ -278,6 +278,7 @@ class InteractiveOrchestrator:
                 break
 
         iteration = 0
+        _force_respond = False  # Set by tools that want the LLM to respond immediately
 
         while self.max_iterations == -1 or iteration < self.max_iterations:
             # Check for cancellation at iteration start
@@ -398,8 +399,14 @@ class InteractiveOrchestrator:
             messages_objects = [Message(**msg) for msg in message_dicts]
 
             # Convert tools to ToolSpec format for ChatRequest
+            # If force-respond is active, strip tools so the LLM must produce text
             tools_list = None
-            if tools:
+            if _force_respond:
+                _force_respond = False
+                logger.info(
+                    "[ORCHESTRATOR] Force-respond: tools stripped, LLM must respond with text"
+                )
+            elif tools:
                 tools_list = [
                     ToolSpec(
                         name=t.name,
@@ -701,6 +708,17 @@ class InteractiveOrchestrator:
                                 "tool_call_id": tool_call_id,
                                 "content": content,
                             }
+                        )
+
+                    # Check if any tool requests force-respond (strip tools next call)
+                    _FORCE_RESPOND_TOOLS = {"dispatch_worker"}
+                    if any(
+                        tn in _FORCE_RESPOND_TOOLS
+                        for _, tn, _ in tool_results
+                    ):
+                        _force_respond = True
+                        logger.info(
+                            "Force-respond: tools will be stripped for next LLM call"
                         )
 
                     # INJECTION POINT 3: Check for messages after tools complete
