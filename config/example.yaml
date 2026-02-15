@@ -3,7 +3,7 @@ instances:
     bundle: foundation
     working_dir: /mnt/c/Users/charl/OneDrive/Amplifier Data
     persona:
-      name: Alpha
+      name: Director
       emoji: ":robot_face:"
   
   beta:
