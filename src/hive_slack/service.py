@@ -41,6 +41,10 @@ class InProcessSessionManager:
         self._approval_systems: dict[
             str, object
         ] = {}  # session_key → SlackApprovalSystem
+        self._executing: set[str] = set()  # session_keys with active execute() calls
+        self._pending_notifications: dict[
+            str, list[str]
+        ] = {}  # session_key → queued messages
 
     async def start(self) -> None:
         """Load and prepare bundles for all instances. Called once at startup."""
@@ -158,6 +162,16 @@ class InProcessSessionManager:
             session = await self._get_or_create_session(
                 instance_name, conversation_id, slack_context=slack_context
             )
+
+            # Drain queued worker notifications
+            pending = self._pending_notifications.pop(session_key, [])
+            if pending:
+                notification_block = "\n".join(pending)
+                prompt = (
+                    f"[WORKER REPORTS]\n{notification_block}\n"
+                    f"[END WORKER REPORTS]\n\n{prompt}"
+                )
+
             logger.info(
                 "Executing for %s in %s: %s",
                 instance_name,
@@ -176,6 +190,7 @@ class InProcessSessionManager:
             if on_progress:
                 unregister_hooks = self._register_progress_hooks(session, on_progress)
 
+            self._executing.add(session_key)
             try:
                 response = await session.execute(prompt)
             except Exception:
@@ -186,6 +201,7 @@ class InProcessSessionManager:
                         pass
                 raise
             finally:
+                self._executing.discard(session_key)
                 # Unregister temporary hooks
                 for unreg in unregister_hooks:
                     try:
@@ -343,6 +359,25 @@ class InProcessSessionManager:
 
         return False
 
+    def notify(self, instance_name: str, conversation_id: str, message: str) -> bool:
+        """Deliver a notification to a session.
+
+        If the session is actively executing, injects the message into the
+        orchestrator loop for immediate processing. Otherwise, queues the
+        message to be prepended to the next execute() prompt.
+
+        Returns True if delivered immediately, False if queued.
+        """
+        session_key = f"{instance_name}:{conversation_id}"
+
+        if session_key in self._executing:
+            if self.inject_message(instance_name, conversation_id, message):
+                return True  # Delivered to active orchestrator loop
+
+        # Either not executing, or inject failed — queue for next execute()
+        self._pending_notifications.setdefault(session_key, []).append(message)
+        return False
+
     async def _get_or_create_session(
         self,
         instance_name: str,
@@ -413,6 +448,7 @@ class InProcessSessionManager:
                         session_manager=self,
                         instance_name=instance_name,
                         working_dir=instance.working_dir,
+                        director_conversation_id=conversation_id,
                     )
                 )
 

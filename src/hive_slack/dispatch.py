@@ -30,10 +30,12 @@ class DispatchWorkerTool:
         session_manager,
         instance_name: str,
         working_dir: str,
+        director_conversation_id: str = "",
     ) -> None:
         self._manager = session_manager
         self._instance_name = instance_name
         self._working_dir = Path(working_dir).expanduser()
+        self._director_conversation_id = director_conversation_id
         self._worker_counter = 0
 
     @property
@@ -121,9 +123,7 @@ class DispatchWorkerTool:
             )
             # Insert after ## Active heading
             if "## Active" in content:
-                content = content.replace(
-                    "## Active\n", f"## Active\n{entry}\n", 1
-                )
+                content = content.replace("## Active\n", f"## Active\n{entry}\n", 1)
             else:
                 content = f"## Active\n{entry}\n{content}"
             tasks_path.write_text(content)
@@ -149,9 +149,11 @@ class DispatchWorkerTool:
                     continue
                 if skip and line.strip().startswith("- id: "):
                     skip = False
-                if skip and (line.strip().startswith("description:") or
-                             line.strip().startswith("started:") or
-                             line.strip().startswith("status:")):
+                if skip and (
+                    line.strip().startswith("description:")
+                    or line.strip().startswith("started:")
+                    or line.strip().startswith("status:")
+                ):
                     continue
                 skip = False
                 new_lines.append(line)
@@ -190,7 +192,7 @@ class DispatchWorkerTool:
         try:
             content = tasks_path.read_text() if tasks_path.exists() else ""
             content = content.replace(
-                f"  status: worker dispatched\n",
+                "  status: worker dispatched\n",
                 f"  status: failed -- {error[:200]}\n",
                 1,
             )
@@ -214,11 +216,29 @@ class DispatchWorkerTool:
             # Write result to TASKS.md (truncate long responses for the summary)
             summary = response.strip()
             if len(summary) > 500:
-                summary = summary[:500] + "... [truncated -- ask Director for full result]"
+                summary = (
+                    summary[:500] + "... [truncated -- ask Director for full result]"
+                )
 
             self._complete_task(task_id, summary)
             logger.info("Background worker completed: %s", task_id)
 
+            # Notify Director of completion
+            self._manager.notify(
+                self._instance_name,
+                self._director_conversation_id,
+                f'[WORKER REPORT] Task "{task_id}" completed.\n'
+                f"Result: {summary}\n"
+                "Full details in TASKS.md.",
+            )
+
         except Exception as e:
             logger.exception("Background worker failed: %s", task_id)
             self._fail_task(task_id, str(e))
+
+            # Notify Director of failure
+            self._manager.notify(
+                self._instance_name,
+                self._director_conversation_id,
+                f'[WORKER REPORT] Task "{task_id}" FAILED.\nError: {e}',
+            )

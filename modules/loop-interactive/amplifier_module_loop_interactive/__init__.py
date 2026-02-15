@@ -112,21 +112,29 @@ class InteractiveOrchestrator:
         )
         await context.add_message({"role": "user", "content": injection})
 
-        await hooks.emit("injection:applied", {
-            "messages": messages,
-            "count": len(messages),
-        })
+        await hooks.emit(
+            "injection:applied",
+            {
+                "messages": messages,
+                "count": len(messages),
+            },
+        )
 
         if self._on_progress:
             try:
-                await self._on_progress("injection:applied", {
-                    "messages": messages,
-                    "count": len(messages),
-                })
+                await self._on_progress(
+                    "injection:applied",
+                    {
+                        "messages": messages,
+                        "count": len(messages),
+                    },
+                )
             except Exception:
                 pass
 
-        logger.info("Injected %d queued message(s) into execution context", len(messages))
+        logger.info(
+            "Injected %d queued message(s) into execution context", len(messages)
+        )
         return True
 
     async def _apply_rate_limit_delay(
@@ -291,7 +299,10 @@ class InteractiveOrchestrator:
             # INJECTION POINT 1: Check for injected messages at iteration start
             injected = await self._drain_injection_queue(context, hooks)
             if injected:
-                logger.info("Injection point 1: Messages injected at iteration %d start", iteration)
+                logger.info(
+                    "Injection point 1: Messages injected at iteration %d start",
+                    iteration,
+                )
 
             # Fire progress callback
             if self._on_progress:
@@ -453,7 +464,9 @@ class InteractiveOrchestrator:
                     if not self._injection_queue.empty():
                         injected = await self._drain_injection_queue(context, hooks)
                         if injected:
-                            logger.info("Injection point 2 (streaming): Messages injected, continuing")
+                            logger.info(
+                                "Injection point 2 (streaming): Messages injected, continuing"
+                            )
                             continue
                     break
             else:
@@ -507,6 +520,20 @@ class InteractiveOrchestrator:
                                 response.content
                             )
 
+                        # Log diagnostics for empty response debugging
+                        if not response_text:
+                            logger.warning(
+                                "[ORCHESTRATOR] Empty response_text! "
+                                "response.text=%r, finish_reason=%s, "
+                                "content_block_types=%s",
+                                getattr(response, "text", "N/A"),
+                                getattr(response, "finish_reason", "N/A"),
+                                [
+                                    getattr(b, "type", "?")
+                                    for b in (getattr(response, "content", None) or [])
+                                ],
+                            )
+
                         # Stream the final response token by token
                         async for token in self._tokenize_stream(response_text):
                             yield (token, iteration)
@@ -528,9 +555,33 @@ class InteractiveOrchestrator:
                                 f"[ORCHESTRATOR] Storing {len(content_dicts)} content blocks"
                             )
                             for i, block_dict in enumerate(content_dicts):
-                                logger.info(
-                                    f"[ORCHESTRATOR]   Block {i}: type={block_dict.get('type')}, has_content={'content' in block_dict}"
-                                )
+                                # Log actual content presence per block type:
+                                # - TextBlock uses 'text' field
+                                # - ThinkingBlock uses 'thinking' field
+                                # (ThinkingBlock also has 'content' for OpenAI reasoning state - not the text)
+                                block_type = block_dict.get("type")
+                                if block_type == "text":
+                                    text_val = block_dict.get("text", "")
+                                    text_preview = (
+                                        (text_val[:80] + "...")
+                                        if len(text_val) > 80
+                                        else text_val
+                                    )
+                                    logger.info(
+                                        f"[ORCHESTRATOR]   Block {i}: type=text, "
+                                        f"text_length={len(text_val)}, preview={text_preview!r}"
+                                    )
+                                elif block_type == "thinking":
+                                    thinking_val = block_dict.get("thinking", "")
+                                    logger.info(
+                                        f"[ORCHESTRATOR]   Block {i}: type=thinking, "
+                                        f"thinking_length={len(thinking_val)}, "
+                                        f"has_signature={bool(block_dict.get('signature'))}"
+                                    )
+                                else:
+                                    logger.info(
+                                        f"[ORCHESTRATOR]   Block {i}: type={block_type}"
+                                    )
                             assistant_msg = {
                                 "role": "assistant",
                                 "content": content_dicts,
@@ -570,7 +621,9 @@ class InteractiveOrchestrator:
                         if not self._injection_queue.empty():
                             injected = await self._drain_injection_queue(context, hooks)
                             if injected:
-                                logger.info("Injection point 2: Messages injected before break, continuing")
+                                logger.info(
+                                    "Injection point 2: Messages injected before break, continuing"
+                                )
                                 continue  # Loop back instead of breaking
                         break
 
@@ -712,10 +765,7 @@ class InteractiveOrchestrator:
 
                     # Check if any tool requests force-respond (strip tools next call)
                     _FORCE_RESPOND_TOOLS = {"dispatch_worker"}
-                    if any(
-                        tn in _FORCE_RESPOND_TOOLS
-                        for _, tn, _ in tool_results
-                    ):
+                    if any(tn in _FORCE_RESPOND_TOOLS for _, tn, _ in tool_results):
                         _force_respond = True
                         logger.info(
                             "Force-respond: tools will be stripped for next LLM call"
@@ -724,7 +774,9 @@ class InteractiveOrchestrator:
                     # INJECTION POINT 3: Check for messages after tools complete
                     injected = await self._drain_injection_queue(context, hooks)
                     if injected:
-                        logger.info("Injection point 3: Messages injected after tool execution")
+                        logger.info(
+                            "Injection point 3: Messages injected after tool execution"
+                        )
 
                 except Exception as e:
                     # Ensure error message is never empty (TimeoutError has empty str())
@@ -953,10 +1005,13 @@ DO NOT mention this iteration limit or reminder to the user explicitly. Simply w
             # Fire progress callback for tool start
             if self._on_progress:
                 try:
-                    await self._on_progress("tool:start", {
-                        "tool": tool_call.name,
-                        "tool_call_id": tool_call.id,
-                    })
+                    await self._on_progress(
+                        "tool:start",
+                        {
+                            "tool": tool_call.name,
+                            "tool_call_id": tool_call.id,
+                        },
+                    )
                 except Exception:
                     pass
 
@@ -1015,10 +1070,13 @@ DO NOT mention this iteration limit or reminder to the user explicitly. Simply w
             # Fire progress callback for tool end
             if self._on_progress:
                 try:
-                    await self._on_progress("tool:end", {
-                        "tool": tool_call.name,
-                        "tool_call_id": tool_call.id,
-                    })
+                    await self._on_progress(
+                        "tool:end",
+                        {
+                            "tool": tool_call.name,
+                            "tool_call_id": tool_call.id,
+                        },
+                    )
                 except Exception:
                     pass
 
