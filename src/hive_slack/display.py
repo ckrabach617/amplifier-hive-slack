@@ -23,6 +23,7 @@ class SlackDisplaySystem:
         self._client = slack_client
         self._channel = channel
         self._thread_ts = thread_ts
+        self._background_tasks: set[asyncio.Task] = set()
 
     def show_message(
         self,
@@ -36,7 +37,9 @@ class SlackDisplaySystem:
 
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(self._post(text))
+            task = loop.create_task(self._post(text))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
         except RuntimeError:
             # No running event loop — just log
             logger.info("[display:%s] %s", level, message)

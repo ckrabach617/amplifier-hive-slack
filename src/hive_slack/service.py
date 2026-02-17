@@ -45,6 +45,8 @@ class InProcessSessionManager:
         self._pending_notifications: dict[
             str, list[str]
         ] = {}  # session_key → queued messages
+        self._recipes_available: bool = True  # Set False if recipe loading fails
+        self._capability_warned: set[str] = set()  # session_keys already warned
 
     async def start(self) -> None:
         """Load and prepare bundles for all instances. Called once at startup."""
@@ -99,7 +101,13 @@ class InProcessSessionManager:
                 bundle = bundle.compose(recipes_behavior)
                 logger.info("Composed recipes behavior (Tier 3 approval gates)")
             except Exception:
-                logger.warning("Could not load recipes behavior", exc_info=True)
+                logger.error(
+                    "TIER 3 UNAVAILABLE: Could not load recipes behavior. "
+                    "Staged approval workflows will not work. "
+                    "The Director will be notified on first interaction.",
+                    exc_info=True,
+                )
+                self._recipes_available = False
 
             logger.info("Preparing bundle '%s'...", bundle_name)
             self._prepared[bundle_name] = await bundle.prepare()
@@ -162,6 +170,21 @@ class InProcessSessionManager:
             session = await self._get_or_create_session(
                 instance_name, conversation_id, slack_context=slack_context
             )
+
+            # One-time capability warning if recipes failed to load
+            if (
+                not self._recipes_available
+                and session_key not in self._capability_warned
+            ):
+                self._capability_warned.add(session_key)
+                prompt = (
+                    "[SYSTEM NOTE] Tier 3 (staged approval recipes) is "
+                    "unavailable this session -- the recipes bundle failed "
+                    "to load at startup. You can still handle Tier 1, 1.5, "
+                    "2, and 2+ requests normally. If a user requests Tier 3 "
+                    "work, let them know it's temporarily unavailable.\n"
+                    "[END SYSTEM NOTE]\n\n" + prompt
+                )
 
             # Drain queued worker notifications
             pending = self._pending_notifications.pop(session_key, [])
@@ -362,20 +385,17 @@ class InProcessSessionManager:
     def notify(self, instance_name: str, conversation_id: str, message: str) -> bool:
         """Deliver a notification to a session.
 
-        If the session is actively executing, injects the message into the
-        orchestrator loop for immediate processing. Otherwise, queues the
-        message to be prepended to the next execute() prompt.
+        Always queues the message to be prepended to the next execute() prompt.
+        Worker reports should never be injected mid-execution because they can
+        hijack the orchestrator loop (e.g., triggering injection point 2 after
+        a force-respond cycle, causing the Director to loop instead of posting
+        its response to Slack).
 
-        Returns True if delivered immediately, False if queued.
+        Returns False (always queued, never delivered immediately).
         """
-        session_key = f"{instance_name}:{conversation_id}"
-
-        if session_key in self._executing:
-            if self.inject_message(instance_name, conversation_id, message):
-                return True  # Delivered to active orchestrator loop
-
-        # Either not executing, or inject failed — queue for next execute()
-        self._pending_notifications.setdefault(session_key, []).append(message)
+        self._pending_notifications.setdefault(
+            f"{instance_name}:{conversation_id}", []
+        ).append(message)
         return False
 
     async def _get_or_create_session(
@@ -548,3 +568,4 @@ class InProcessSessionManager:
         self._sessions.clear()
         self._locks.clear()
         self._approval_systems.clear()
+        self._capability_warned.clear()

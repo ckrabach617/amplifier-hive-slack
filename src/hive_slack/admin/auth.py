@@ -10,6 +10,7 @@ a secure cookie-based session store built into NiceGUI.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import logging
 import os
 
@@ -43,7 +44,7 @@ def verify_password(password: str) -> bool:
     if not expected:
         return True
     actual = hashlib.sha256(password.encode()).hexdigest()
-    return actual == expected
+    return hmac.compare_digest(actual, expected)
 
 
 def require_auth() -> bool:

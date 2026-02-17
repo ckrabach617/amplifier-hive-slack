@@ -16,6 +16,7 @@ import asyncio
 import logging
 import re
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
@@ -305,6 +306,9 @@ class SlackConnector:
         self._app = AsyncApp(token=config.slack.bot_token)
         self._handler = AsyncSocketModeHandler(self._app, config.slack.app_token)
 
+        # Background tasks — prevent GC collection before completion
+        self._background_tasks: set[asyncio.Task] = set()
+
         # Bot user ID — populated in start() via auth.test
         self._bot_user_id: str = ""
         self._bot_id: str = ""  # The bot's bot_id (different from user_id)
@@ -315,7 +319,7 @@ class SlackConnector:
         self._cache_ttl = 60  # seconds — re-read topic every 60s
 
         # Track messages we've already handled (prevent double-processing)
-        self._handled_messages: set[str] = set()
+        self._handled_messages: OrderedDict[str, None] = OrderedDict()
 
         # Track prompts that generated bot responses (for reaction commands)
         # message_ts → (instance_name, conversation_id, prompt)
@@ -331,7 +335,6 @@ class SlackConnector:
         # Thread ownership: conversation_id → instance_name (or "_ROUNDTABLE")
         self._thread_owners: dict[str, str] = {}
         self._thread_owner_order: list[str] = []
-        _THREAD_OWNER_LIMIT = 10_000
 
         # Register event handlers
         self._app.event("app_mention")(self._handle_mention)
@@ -660,17 +663,28 @@ class SlackConnector:
                 )
                 if suffix:
                     response_text = f"{response_text}\n{suffix}"
-                # Fire-and-forget save
-                _asyncio.create_task(onboarding.save())
+                # Fire-and-forget save (prevent GC collection)
+                _save_task = _asyncio.create_task(onboarding.save())
+                self._background_tasks.add(_save_task)
+                _save_task.add_done_callback(self._background_tasks.discard)
 
-            result = await say(
-                text=response_text,
-                thread_ts=thread_ts or None,
-                username=instance.persona.name,
-                icon_emoji=instance.persona.emoji,
-            )
-            self._track_prompt(result, instance_name, conversation_id, prompt)
-            self._set_thread_owner(conversation_id, instance_name)
+            # Guard against empty response text (can happen when extended
+            # thinking produces reasoning but no visible text, e.g. after
+            # force-respond). Slack rejects empty messages with 'no_text'.
+            if not response_text or not response_text.strip():
+                logger.warning(
+                    "Empty response text for %s, skipping Slack post",
+                    conversation_id,
+                )
+            else:
+                result = await say(
+                    text=response_text,
+                    thread_ts=thread_ts or None,
+                    username=instance.persona.name,
+                    icon_emoji=instance.persona.emoji,
+                )
+                self._track_prompt(result, instance_name, conversation_id, prompt)
+                self._set_thread_owner(conversation_id, instance_name)
 
         except Exception:
             logger.exception("Error in execution for %s", conversation_id)
@@ -728,10 +742,10 @@ class SlackConnector:
         """Handle @mention events — the core message flow."""
         # Mark this message as handled so _handle_message skips it
         msg_ts = event.get("ts", "")
-        self._handled_messages.add(msg_ts)
-        # Keep the set bounded (only recent messages matter)
-        if len(self._handled_messages) > 1000:
-            self._handled_messages = set(list(self._handled_messages)[-500:])
+        self._handled_messages[msg_ts] = None
+        # Keep the dict bounded (evict oldest entries first)
+        while len(self._handled_messages) > 1000:
+            self._handled_messages.popitem(last=False)
 
         text = self._strip_mention(event.get("text", ""))
         if not text:

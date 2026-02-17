@@ -40,6 +40,7 @@ class DispatchWorkerTool:
         self._director_conversation_id = director_conversation_id
         self._worker_counter = 0
         self._store = TaskStore(self._working_dir / "TASKS.md")
+        self._active_tasks: dict[str, asyncio.Task] = {}
 
     @property
     def name(self) -> str:
@@ -97,9 +98,13 @@ class DispatchWorkerTool:
         await self._store.add_active(task_id, task)
 
         # Launch background task
-        asyncio.create_task(
+        worker_task = asyncio.create_task(
             self._run_worker(task, task_id),
             name=f"worker-{task_id}",
+        )
+        self._active_tasks[task_id] = worker_task
+        worker_task.add_done_callback(
+            lambda t, tid=task_id: self._on_worker_done(tid, t)
         )
 
         return ToolResult(
@@ -152,4 +157,19 @@ class DispatchWorkerTool:
                 self._instance_name,
                 self._director_conversation_id,
                 f'[WORKER REPORT] Task "{task_id}" FAILED.\nError: {e}',
+            )
+
+    def _on_worker_done(self, task_id: str, task: asyncio.Task) -> None:
+        """Handle worker task completion -- log unhandled exceptions."""
+        self._active_tasks.pop(task_id, None)
+        if task.cancelled():
+            logger.info("Worker %s was cancelled", task_id)
+            return
+        exc = task.exception()
+        if exc:
+            logger.error(
+                "Worker %s raised unhandled exception: %s",
+                task_id,
+                exc,
+                exc_info=exc,
             )

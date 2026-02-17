@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets
 import signal
 import sys
+from pathlib import Path
 
 from hive_slack.config import HiveSlackConfig
 from hive_slack.service import InProcessSessionManager
@@ -143,20 +145,36 @@ def run_with_admin(config_path: str) -> None:
         create_admin_app(service, connector, config)
 
         # Start connector and watchdog as background tasks
-        asyncio.create_task(connector.start())
-        asyncio.create_task(connector.run_watchdog())
+        nonlocal connector_task, watchdog_task
+        connector_task = asyncio.create_task(connector.start())
+        watchdog_task = asyncio.create_task(connector.run_watchdog())
+
+    connector_task: asyncio.Task[None] | None = None
+    watchdog_task: asyncio.Task[None] | None = None
 
     @nicegui_app.on_shutdown
     async def shutdown():
+        if watchdog_task is not None:
+            watchdog_task.cancel()
+        if connector_task is not None:
+            connector_task.cancel()
         if connector:
             await connector.stop()
         if service:
             await service.stop()
 
     # Storage secret for NiceGUI session cookies (auth)
-    storage_secret = os.environ.get(
-        "ADMIN_STORAGE_SECRET", "hive-slack-admin-default-secret"
-    )
+    storage_secret = os.environ.get("ADMIN_STORAGE_SECRET", "")
+    if not storage_secret:
+        # Generate a persistent random secret on first run
+        secret_path = Path.home() / ".amplifier" / "hive" / "admin_secret"
+        if secret_path.exists():
+            storage_secret = secret_path.read_text().strip()
+        if not storage_secret:
+            storage_secret = secrets.token_hex(32)
+            secret_path.parent.mkdir(parents=True, exist_ok=True)
+            secret_path.write_text(storage_secret)
+            logger.info("Generated new admin storage secret at %s", secret_path)
 
     logger.info("Starting with admin UI on port %d", port)
     ui.run(
