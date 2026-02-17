@@ -432,8 +432,8 @@ class TestHandleMessage:
         connector = SlackConnector(config, mock_service)
         connector._bot_user_id = "UBOTID"
         # Pre-populate cache so we don't need real Slack API
-        connector._channel_cache["C99999"] = ChannelConfig(instance="alpha")
-        connector._cache_timestamps["C99999"] = time.time()
+        connector._channel_config._cache["C99999"] = ChannelConfig(instance="alpha")
+        connector._channel_config._timestamps["C99999"] = time.time()
 
         mock_say = AsyncMock()
         event = {
@@ -461,8 +461,8 @@ class TestHandleMessage:
         connector = SlackConnector(config, mock_service)
         connector._bot_user_id = "UBOTID"
         # Empty config = unconfigured
-        connector._channel_cache["C99999"] = ChannelConfig()
-        connector._cache_timestamps["C99999"] = time.time()
+        connector._channel_config._cache["C99999"] = ChannelConfig()
+        connector._channel_config._timestamps["C99999"] = time.time()
 
         event = {
             "text": "Hello?",
@@ -483,8 +483,8 @@ class TestHandleMessage:
         config = make_config()
         connector = SlackConnector(config, mock_service)
         connector._bot_user_id = "UBOTID"
-        connector._channel_cache["C99999"] = ChannelConfig(default="alpha")
-        connector._cache_timestamps["C99999"] = time.time()
+        connector._channel_config._cache["C99999"] = ChannelConfig(default="alpha")
+        connector._channel_config._timestamps["C99999"] = time.time()
 
         mock_say = AsyncMock()
         event = {
@@ -587,10 +587,10 @@ class TestContextEnrichmentInHandlers:
         config = make_config()
         connector = SlackConnector(config, mock_service)
         connector._bot_user_id = "UBOTID"
-        connector._channel_cache["C99999"] = ChannelConfig(
+        connector._channel_config._cache["C99999"] = ChannelConfig(
             instance="alpha", name="coding"
         )
-        connector._cache_timestamps["C99999"] = time.time()
+        connector._channel_config._timestamps["C99999"] = time.time()
 
         mock_say = AsyncMock()
         event = {
@@ -868,10 +868,10 @@ class TestFileUpload:
 
         connector = SlackConnector(config, mock_service)
         connector._bot_user_id = "UBOTID"
-        connector._channel_cache["C99999"] = ChannelConfig(
+        connector._channel_config._cache["C99999"] = ChannelConfig(
             instance="alpha", name="test"
         )
-        connector._cache_timestamps["C99999"] = time.time()
+        connector._channel_config._timestamps["C99999"] = time.time()
 
         event = {
             "text": "check this out",
@@ -912,10 +912,10 @@ class TestFileUpload:
 
         connector = SlackConnector(config, mock_service)
         connector._bot_user_id = "UBOTID"
-        connector._channel_cache["C99999"] = ChannelConfig(
+        connector._channel_config._cache["C99999"] = ChannelConfig(
             instance="alpha", name="test"
         )
-        connector._cache_timestamps["C99999"] = time.time()
+        connector._channel_config._timestamps["C99999"] = time.time()
 
         event = {
             "text": "",
@@ -1399,10 +1399,10 @@ class TestMessageQueuing:
         config = make_config()
         connector = SlackConnector(config, mock_service)
         connector._bot_user_id = "UBOTID"
-        connector._channel_cache["C99999"] = ChannelConfig(
+        connector._channel_config._cache["C99999"] = ChannelConfig(
             instance="alpha", name="test"
         )
-        connector._cache_timestamps["C99999"] = time.time()
+        connector._channel_config._timestamps["C99999"] = time.time()
 
         # Simulate an active execution
         conv_id = "C99999:1234567890.000000"
@@ -1445,10 +1445,10 @@ class TestMessageQueuing:
         config = make_config()
         connector = SlackConnector(config, mock_service)
         connector._bot_user_id = "UBOTID"
-        connector._channel_cache["C99999"] = ChannelConfig(
+        connector._channel_config._cache["C99999"] = ChannelConfig(
             instance="alpha", name="test"
         )
-        connector._cache_timestamps["C99999"] = time.time()
+        connector._channel_config._timestamps["C99999"] = time.time()
 
         conv_id = "C99999:1234567890.000000"
         connector._active_executions[conv_id] = {
@@ -1689,8 +1689,8 @@ class TestEmojiSummoning:
         connector._app.client.conversations_info = AsyncMock(return_value={
             "channel": {"name": "general", "topic": {"value": ""}}
         })
-        connector._cache_timestamps["C99999"] = time.time()
-        connector._channel_cache["C99999"] = ChannelConfig(name="general")
+        connector._channel_config._timestamps["C99999"] = time.time()
+        connector._channel_config._cache["C99999"] = ChannelConfig(name="general")
 
         event = {
             "reaction": "alpha",
@@ -1947,17 +1947,16 @@ class TestReconnect:
         """Reconnect closes the old handler and creates a fresh one."""
         config = make_config()
         connector = SlackConnector(config, AsyncMock())
-        connector._handler = AsyncMock()
-        connector._app = MagicMock()
+        connector._connection._handler = AsyncMock()
 
-        with patch("hive_slack.slack.AsyncSocketModeHandler") as MockHandler:
+        with patch("hive_slack.connection.AsyncSocketModeHandler") as MockHandler:
             new_handler = AsyncMock()
             MockHandler.return_value = new_handler
 
             await connector.reconnect()
 
             # New handler was created with correct args
-            MockHandler.assert_called_once_with(connector._app, config.slack.app_token)
+            MockHandler.assert_called_once_with(connector._connection._app, config.slack.app_token)
             # New handler was connected
             new_handler.connect_async.assert_called_once()
 
@@ -1968,10 +1967,9 @@ class TestReconnect:
         connector = SlackConnector(config, AsyncMock())
         old_handler = AsyncMock()
         old_handler.close_async.side_effect = RuntimeError("socket gone")
-        connector._handler = old_handler
-        connector._app = MagicMock()
+        connector._connection._handler = old_handler
 
-        with patch("hive_slack.slack.AsyncSocketModeHandler") as MockHandler:
+        with patch("hive_slack.connection.AsyncSocketModeHandler") as MockHandler:
             new_handler = AsyncMock()
             MockHandler.return_value = new_handler
 
@@ -1989,7 +1987,7 @@ class TestConnectionWatchdog:
         """A wall-clock jump triggers reconnect (simulates OS suspend/resume)."""
         config = make_config()
         connector = SlackConnector(config, AsyncMock())
-        connector.reconnect = AsyncMock()
+        connector._connection.reconnect = AsyncMock()
 
         # time.time() is called once for init (last_wall) and once per loop
         # iteration (now_wall). A 300s jump between init and first loop tick
@@ -2021,14 +2019,14 @@ class TestConnectionWatchdog:
             with pytest.raises(asyncio.CancelledError):
                 await connector.run_watchdog(interval=15.0)
 
-        connector.reconnect.assert_called_once()
+        connector._connection.reconnect.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_no_reconnect_on_normal_tick(self):
         """Normal ticks without time jumps do not trigger reconnect."""
         config = make_config()
         connector = SlackConnector(config, AsyncMock())
-        connector.reconnect = AsyncMock()
+        connector._connection.reconnect = AsyncMock()
 
         iteration = 0
 
@@ -2042,16 +2040,16 @@ class TestConnectionWatchdog:
             with pytest.raises(asyncio.CancelledError):
                 await connector.run_watchdog(interval=15.0)
 
-        connector.reconnect.assert_not_called()
+        connector._connection.reconnect.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_health_check_triggers_after_8_intervals(self):
         """auth.test health check fires every 8 intervals (~2 minutes)."""
         config = make_config()
         connector = SlackConnector(config, AsyncMock())
-        connector.reconnect = AsyncMock()
-        connector._app = AsyncMock()
-        connector._app.client.auth_test = AsyncMock()
+        connector._connection.reconnect = AsyncMock()
+        connector._connection._app = AsyncMock()
+        connector._connection._app.client.auth_test = AsyncMock()
 
         iteration = 0
 
@@ -2066,18 +2064,18 @@ class TestConnectionWatchdog:
                 await connector.run_watchdog(interval=15.0)
 
         # auth.test should have been called once (at iteration 8)
-        connector._app.client.auth_test.assert_called_once()
+        connector._connection._app.client.auth_test.assert_called_once()
         # But no reconnect (health check passed)
-        connector.reconnect.assert_not_called()
+        connector._connection.reconnect.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_health_check_failure_triggers_reconnect(self):
         """Failed auth.test triggers reconnect."""
         config = make_config()
         connector = SlackConnector(config, AsyncMock())
-        connector.reconnect = AsyncMock()
-        connector._app = AsyncMock()
-        connector._app.client.auth_test = AsyncMock(
+        connector._connection.reconnect = AsyncMock()
+        connector._connection._app = AsyncMock()
+        connector._connection._app.client.auth_test = AsyncMock(
             side_effect=Exception("connection lost")
         )
 
@@ -2094,16 +2092,16 @@ class TestConnectionWatchdog:
                 await connector.run_watchdog(interval=15.0)
 
         # Health check failed, so reconnect should have been called
-        connector.reconnect.assert_called_once()
+        connector._connection.reconnect.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_reconnect_failure_does_not_crash_watchdog(self):
         """If reconnect raises, the watchdog continues running."""
         config = make_config()
         connector = SlackConnector(config, AsyncMock())
-        connector.reconnect = AsyncMock(side_effect=RuntimeError("reconnect failed"))
-        connector._app = AsyncMock()
-        connector._app.client.auth_test = AsyncMock(
+        connector._connection.reconnect = AsyncMock(side_effect=RuntimeError("reconnect failed"))
+        connector._connection._app = AsyncMock()
+        connector._connection._app.client.auth_test = AsyncMock(
             side_effect=Exception("connection lost")
         )
 
@@ -2120,4 +2118,4 @@ class TestConnectionWatchdog:
                 await connector.run_watchdog(interval=15.0)
 
         # Should have attempted reconnect twice (at iteration 8 and 16)
-        assert connector.reconnect.call_count == 2
+        assert connector._connection.reconnect.call_count == 2
