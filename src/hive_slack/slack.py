@@ -1266,13 +1266,10 @@ class SlackConnector:
 
         logger.info("Approval action: %s → %s", action_id, value)
 
-        # Find the matching approval system across all active sessions
-        if hasattr(self._service, "_approval_systems"):
-            for session_key, approval in self._service._approval_systems.items():
-                if hasattr(approval, "resolve_approval"):
-                    if approval.resolve_approval(action_id, value):
-                        logger.info("Approval resolved for session %s", session_key)
-                        return
+        # Resolve via the session manager's public interface
+        if hasattr(self._service, "resolve_approval"):
+            if self._service.resolve_approval(action_id, value):
+                return
 
         logger.debug("No pending approval matched action %s", action_id)
 

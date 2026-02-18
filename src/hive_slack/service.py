@@ -225,9 +225,7 @@ class InProcessSessionManager:
                 unregister_hooks = self._register_progress_hooks(session, on_progress)
 
             # Register tier classification tracking hook
-            tier_unreg = self._register_tier_tracking_hook(
-                session, session_key
-            )
+            tier_unreg = self._register_tier_tracking_hook(session, session_key)
             if tier_unreg:
                 unregister_hooks.append(tier_unreg)
 
@@ -666,6 +664,21 @@ class InProcessSessionManager:
         """Get the approval system for a session (for resolving button clicks)."""
         session_key = f"{instance_name}:{conversation_id}"
         return self._approval_systems.get(session_key)
+
+    def resolve_approval(self, action_id: str, value: str) -> bool:
+        """Try to resolve an approval action across all active sessions.
+
+        Called by the connector when a Slack block_actions event arrives.
+        Scans all active approval systems to find one matching the action_id.
+        Returns True if a pending approval matched, False otherwise.
+        """
+        for session_key, approval in self._approval_systems.items():
+            if hasattr(approval, "resolve_approval") and approval.resolve_approval(
+                action_id, value
+            ):
+                logger.info("Approval resolved for session %s", session_key)
+                return True
+        return False
 
     async def stop(self) -> None:
         """Cleanup all sessions."""
