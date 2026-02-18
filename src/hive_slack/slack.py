@@ -80,7 +80,7 @@ class SlackConnector:
 
         # Track prompts that generated bot responses (for reaction commands)
         # message_ts → (instance_name, conversation_id, prompt)
-        self._message_prompts: dict[str, tuple[str, str, str]] = {}
+        self._message_prompts: OrderedDict[str, tuple[str, str, str]] = OrderedDict()
 
         # Active execution tracking for progress indicators
         # conversation_id → {"status_ts", "user_ts", "channel", "thread_ts", "instance_name"}
@@ -90,8 +90,9 @@ class SlackConnector:
         self._message_queues: dict[str, list[str]] = {}
 
         # Thread ownership: conversation_id → instance_name (or "_ROUNDTABLE")
-        self._thread_owners: dict[str, str] = {}
-        self._thread_owner_order: list[str] = []
+        # OrderedDict gives O(1) move_to_end + popitem, replacing the old
+        # dict + parallel list pattern that had O(n) remove/pop(0).
+        self._thread_owners: OrderedDict[str, str] = OrderedDict()
 
         # Register event handlers
         self._app.event("app_mention")(self._handle_mention)
@@ -593,7 +594,14 @@ class SlackConnector:
 
             if not injected:
                 # Fallback: queue locally for batch after execution
-                self._message_queues.setdefault(conversation_id, []).append(prompt)
+                queue = self._message_queues.setdefault(conversation_id, [])
+                if len(queue) < 20:  # Cap per-conversation queue depth
+                    queue.append(prompt)
+                else:
+                    logger.warning(
+                        "Message queue full for %s (cap=20), dropping message",
+                        conversation_id,
+                    )
 
             # Acknowledge with 📨 either way
             try:
@@ -926,7 +934,14 @@ class SlackConnector:
 
             if not injected:
                 # Fallback: queue locally for batch after execution
-                self._message_queues.setdefault(conversation_id, []).append(prompt)
+                queue = self._message_queues.setdefault(conversation_id, [])
+                if len(queue) < 20:  # Cap per-conversation queue depth
+                    queue.append(prompt)
+                else:
+                    logger.warning(
+                        "Message queue full for %s (cap=20), dropping message",
+                        conversation_id,
+                    )
 
             # Acknowledge with 📨 either way
             try:
@@ -972,25 +987,19 @@ class SlackConnector:
                 conversation_id,
                 prompt,
             )
-            # Keep bounded (last 500 entries)
-            if len(self._message_prompts) > 500:
-                oldest_keys = list(self._message_prompts.keys())[:-500]
-                for key in oldest_keys:
-                    del self._message_prompts[key]
+            # Keep bounded (FIFO eviction, cap at 500)
+            while len(self._message_prompts) > 500:
+                self._message_prompts.popitem(last=False)
 
     def _set_thread_owner(self, conversation_id: str, instance_name: str) -> None:
         """Record or transfer thread ownership."""
+        # Move to end if already tracked (O(1) vs old O(n) list.remove)
         if conversation_id in self._thread_owners:
-            try:
-                self._thread_owner_order.remove(conversation_id)
-            except ValueError:
-                pass
+            self._thread_owners.move_to_end(conversation_id)
         self._thread_owners[conversation_id] = instance_name
-        self._thread_owner_order.append(conversation_id)
-        # Evict oldest if over limit
+        # Evict oldest if over limit (O(1) popitem vs old O(n) list.pop(0))
         while len(self._thread_owners) > 10_000:
-            oldest = self._thread_owner_order.pop(0)
-            self._thread_owners.pop(oldest, None)
+            self._thread_owners.popitem(last=False)
 
     def _get_thread_owner(self, conversation_id: str) -> str | None:
         """Get the instance that owns this thread, or None."""
