@@ -551,6 +551,24 @@ class InteractiveOrchestrator:
                                 else block
                                 for block in response_content
                             ]
+                            # Filter out empty text blocks - Anthropic API rejects
+                            # TextBlock(text="") which can occur when extended thinking
+                            # produces reasoning but no visible text (e.g., force-respond)
+                            pre_filter_count = len(content_dicts)
+                            content_dicts = [
+                                b
+                                for b in content_dicts
+                                if not (
+                                    isinstance(b, dict)
+                                    and b.get("type") == "text"
+                                    and not b.get("text")
+                                )
+                            ]
+                            if len(content_dicts) < pre_filter_count:
+                                logger.warning(
+                                    "[ORCHESTRATOR] Filtered %d empty text block(s) from response",
+                                    pre_filter_count - len(content_dicts),
+                                )
                             logger.info(
                                 f"[ORCHESTRATOR] Storing {len(content_dicts)} content blocks"
                             )
@@ -587,6 +605,14 @@ class InteractiveOrchestrator:
                                 "content": content_dicts,
                             }
                         else:
+                            # Guard against empty string content - use a placeholder
+                            # so the API doesn't reject the message
+                            if not response_text:
+                                logger.warning(
+                                    "[ORCHESTRATOR] Empty response_text for assistant message, "
+                                    "using placeholder to avoid API rejection"
+                                )
+                                response_text = "(No visible response)"
                             assistant_msg = {
                                 "role": "assistant",
                                 "content": response_text,
@@ -642,14 +668,25 @@ class InteractiveOrchestrator:
                     # Store structured content from response.content (our Pydantic models)
                     response_content = getattr(response, "content", None)
                     if response_content and isinstance(response_content, list):
+                        _tool_content = [
+                            block.model_dump()
+                            if hasattr(block, "model_dump")
+                            else block
+                            for block in response_content
+                        ]
+                        # Filter out empty text blocks (same guard as text-only path)
+                        _tool_content = [
+                            b
+                            for b in _tool_content
+                            if not (
+                                isinstance(b, dict)
+                                and b.get("type") == "text"
+                                and not b.get("text")
+                            )
+                        ]
                         assistant_msg = {
                             "role": "assistant",
-                            "content": [
-                                block.model_dump()
-                                if hasattr(block, "model_dump")
-                                else block
-                                for block in response_content
-                            ],
+                            "content": _tool_content,
                             "tool_calls": [
                                 {
                                     "id": tc.id,
