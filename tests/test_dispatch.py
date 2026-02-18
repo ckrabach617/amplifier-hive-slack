@@ -617,3 +617,157 @@ class TestVerifiedWorkerResearchFailure:
         tf = read_tasks(working_dir)
         active = tf.get_section(SECTION_ACTIVE)
         assert "failed" in active[0].fields["status"]
+
+
+# ---------------------------------------------------------------------------
+# execute() -- verification routing
+# ---------------------------------------------------------------------------
+
+
+class TestVerificationRouting:
+    @pytest.mark.asyncio
+    async def test_verification_true_routes_to_verified_worker(
+        self,
+        tool: DispatchWorkerTool,
+        manager: FakeSessionManager,
+        working_dir: Path,
+    ):
+        outbox = working_dir / ".outbox"
+        outbox.mkdir()
+
+        call_count = 0
+
+        async def mock_sessions(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                (outbox / "vr-1-research.md").write_text(
+                    "## Summary\nA\n\n## Claims\n1. X -- Source: http://x.com"
+                )
+                return "done"
+            else:
+                (outbox / "vr-1-verification.md").write_text(
+                    "## Verification Results\n1. X -- CONFIRMED."
+                )
+                return "done"
+
+        manager.execute = AsyncMock(side_effect=mock_sessions)
+
+        result = await tool.execute(
+            {"task": "Research topic", "task_id": "vr-1", "verification": True}
+        )
+        assert result.success
+        await asyncio.sleep(0.1)
+
+        # Two sessions: researcher + verifier
+        assert manager.execute.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_verification_false_routes_to_standard_worker(
+        self,
+        tool: DispatchWorkerTool,
+        manager: FakeSessionManager,
+    ):
+        result = await tool.execute(
+            {"task": "Research topic", "task_id": "std-1", "verification": False}
+        )
+        assert result.success
+        await asyncio.sleep(0.1)
+
+        # Standard worker: one execute call
+        assert manager.execute.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_verification_omitted_routes_to_standard_worker(
+        self,
+        tool: DispatchWorkerTool,
+        manager: FakeSessionManager,
+    ):
+        result = await tool.execute({"task": "Research topic", "task_id": "no-v-1"})
+        assert result.success
+        await asyncio.sleep(0.1)
+
+        assert manager.execute.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# _run_verified_worker -- cancellation
+# ---------------------------------------------------------------------------
+
+
+class TestVerifiedWorkerCancellation:
+    @pytest.mark.asyncio
+    async def test_cancel_mid_research_skips_verification(
+        self,
+        tool: DispatchWorkerTool,
+        manager: FakeSessionManager,
+        working_dir: Path,
+    ):
+        await tool._store.add_active("vt-cr", "Research X")
+        tool._worker_counter = 1
+
+        started = asyncio.Event()
+
+        async def slow_research(*args, **kwargs):
+            started.set()
+            await asyncio.sleep(100)
+
+        manager.execute = AsyncMock(side_effect=slow_research)
+
+        bg_task = asyncio.create_task(tool._run_verified_worker("Research X", "vt-cr"))
+        await started.wait()
+        bg_task.cancel()
+        try:
+            await bg_task
+        except asyncio.CancelledError:
+            pass
+
+        # Only research phase was attempted
+        assert manager.execute.call_count == 1
+        # Director notified of cancellation
+        manager.notify.assert_called_once()
+        assert "cancelled" in manager.notify.call_args[0][2]
+
+    @pytest.mark.asyncio
+    async def test_cancel_mid_verification_cleans_up_files(
+        self,
+        tool: DispatchWorkerTool,
+        manager: FakeSessionManager,
+        working_dir: Path,
+    ):
+        outbox = working_dir / ".outbox"
+        outbox.mkdir()
+        await tool._store.add_active("vt-cv", "Research X")
+        tool._worker_counter = 1
+
+        call_count = 0
+        started_verification = asyncio.Event()
+
+        async def mock_sessions(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                (outbox / "vt-cv-research.md").write_text(
+                    "## Summary\nFindings\n\n## Claims\n"
+                    "1. Claim A -- Source: http://a.com"
+                )
+                return "Research done"
+            else:
+                started_verification.set()
+                await asyncio.sleep(100)
+
+        manager.execute = AsyncMock(side_effect=mock_sessions)
+
+        bg_task = asyncio.create_task(tool._run_verified_worker("Research X", "vt-cv"))
+        await started_verification.wait()
+        bg_task.cancel()
+        try:
+            await bg_task
+        except asyncio.CancelledError:
+            pass
+
+        # Research file cleaned up by finally block
+        assert not (outbox / "vt-cv-research.md").exists()
+        # Director notified
+        manager.notify.assert_called_once()
+        assert "cancelled" in manager.notify.call_args[0][2]

@@ -241,6 +241,15 @@ class DispatchWorkerTool:
                 f"Verification:\n{verification_content}",
             )
 
+        except asyncio.CancelledError:
+            logger.warning("Verified worker cancelled: %s", task_id)
+            await self._store.fail_task(task_id, "cancelled")
+            self._manager.notify(
+                self._instance_name,
+                self._director_conversation_id,
+                f'[WORKER REPORT] Task "{task_id}" was cancelled.',
+            )
+
         finally:
             # Cleanup intermediate files
             for f in (research_file, verification_file):
@@ -254,6 +263,7 @@ class DispatchWorkerTool:
         task = input.get("task", "")
         task_id = input.get("task_id", "")
         tier = input.get("tier", "unknown")
+        verification = input.get("verification", False)
 
         if not task:
             return ToolResult(success=False, output="No task provided")
@@ -273,10 +283,11 @@ class DispatchWorkerTool:
         await self._store.add_active(task_id, task)
 
         # Launch background task
-        worker_task = asyncio.create_task(
-            self._run_worker(task, task_id),
-            name=f"worker-{task_id}",
-        )
+        if verification:
+            coro = self._run_verified_worker(task, task_id)
+        else:
+            coro = self._run_worker(task, task_id)
+        worker_task = asyncio.create_task(coro, name=f"worker-{task_id}")
         self._workers.register(task_id, worker_task, description=task[:100], tier=tier)
 
         return ToolResult(
