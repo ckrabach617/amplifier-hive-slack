@@ -68,6 +68,15 @@ class TestToolMetadata:
         assert "task_id" in schema["properties"]
         assert set(schema["required"]) == {"task", "task_id"}
 
+    def test_schema_includes_verification_field(self, tool: DispatchWorkerTool):
+        schema = tool.input_schema
+        assert "verification" in schema["properties"]
+        assert schema["properties"]["verification"]["type"] == "boolean"
+
+    def test_verification_field_is_optional(self, tool: DispatchWorkerTool):
+        schema = tool.input_schema
+        assert "verification" not in schema["required"]
+
 
 # ---------------------------------------------------------------------------
 # execute() -- input validation

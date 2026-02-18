@@ -85,6 +85,13 @@ class DispatchWorkerTool:
                         "(e.g., '2', '2+', '3'). For observability."
                     ),
                 },
+                "verification": {
+                    "type": "boolean",
+                    "description": (
+                        "Set to true for Tier 2 research tasks to enable "
+                        "two-pass verification (researcher + verifier chain)."
+                    ),
+                },
             },
             "required": ["task", "task_id"],
         }
