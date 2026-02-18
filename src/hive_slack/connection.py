@@ -32,8 +32,29 @@ class SlackConnection:
         self.bot_user_id: str = ""
         self.bot_id: str = ""
 
+        # Tracking fields for /status health reporting
+        self._started_at: float | None = None
+        self._last_health_check_at: float | None = None
+        self._reconnect_count: int = 0
+
+    @property
+    def started_at(self) -> float | None:
+        """Monotonic timestamp when start() was called."""
+        return self._started_at
+
+    @property
+    def last_health_check_at(self) -> float | None:
+        """Monotonic timestamp of last successful health check."""
+        return self._last_health_check_at
+
+    @property
+    def reconnect_count(self) -> int:
+        """Number of reconnections since start."""
+        return self._reconnect_count
+
     async def start(self) -> None:
         """Start the Socket Mode handler (blocks until stopped)."""
+        self._started_at = time.monotonic()
         logger.info("Starting Slack Socket Mode connection...")
 
         # Get our own bot user ID for filtering @mentions in message handlers
@@ -59,6 +80,7 @@ class SlackConnection:
         connection watchdog to recover from stale websockets after
         OS suspend/resume (e.g. WSL2 sleep).
         """
+        self._reconnect_count += 1
         logger.info("Forcing Socket Mode reconnection...")
         try:
             await self._handler.close_async()
@@ -110,6 +132,7 @@ class SlackConnection:
                 health_check_counter = 0
                 try:
                     await asyncio.wait_for(self._app.client.auth_test(), timeout=10.0)
+                    self._last_health_check_at = time.monotonic()
                 except Exception:
                     logger.warning(
                         "Health check (auth.test) failed -- forcing reconnect",
