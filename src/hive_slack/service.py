@@ -224,6 +224,13 @@ class InProcessSessionManager:
             if on_progress:
                 unregister_hooks = self._register_progress_hooks(session, on_progress)
 
+            # Register tier classification tracking hook
+            tier_unreg = self._register_tier_tracking_hook(
+                session, session_key
+            )
+            if tier_unreg:
+                unregister_hooks.append(tier_unreg)
+
             self._executing.add(session_key)
             try:
                 response = await session.execute(prompt)
@@ -357,6 +364,100 @@ class InProcessSessionManager:
             logger.warning("Could not register tool:post progress hook", exc_info=True)
 
         return unregister_fns
+
+    def _register_tier_tracking_hook(
+        self,
+        session: object,
+        session_key: str,
+    ) -> Callable[[], None] | None:
+        """Register a hook to log tier classification for each request.
+
+        Captures dispatch_worker calls to log the declared tier. If no dispatch
+        happens during execution, the request is logged as inline (Tier 1/1.5).
+        Returns an unregister function, or None if hooks aren't available.
+        """
+        coordinator = getattr(session, "coordinator", None)
+        if coordinator is None:
+            return None
+
+        hooks = coordinator.get("hooks") if hasattr(coordinator, "get") else None
+        if hooks is None or not hasattr(hooks, "register"):
+            return None
+
+        from amplifier_core.models import HookResult
+
+        dispatched_tiers: list[dict[str, str]] = []
+
+        async def on_dispatch_pre(event_name: str, data: dict[str, Any]) -> HookResult:
+            tool_name = data.get("tool_name", "")
+            if tool_name == "dispatch_worker":
+                tool_input = data.get("tool_input", {})
+                if isinstance(tool_input, str):
+                    import json as _json
+
+                    try:
+                        tool_input = _json.loads(tool_input)
+                    except Exception:
+                        tool_input = {}
+                if isinstance(tool_input, dict):
+                    dispatched_tiers.append(
+                        {
+                            "tier": tool_input.get("tier", "unknown"),
+                            "task_id": tool_input.get("task_id", ""),
+                        }
+                    )
+            return HookResult(action="continue")
+
+        # Use orchestrator:complete event to log classification summary
+        async def on_execution_complete(
+            event_name: str, data: dict[str, Any]
+        ) -> HookResult:
+            if dispatched_tiers:
+                for dispatch in dispatched_tiers:
+                    logger.info(
+                        "TIER_CLASSIFICATION session=%s tier=%s task_id=%s type=dispatched",
+                        session_key,
+                        dispatch["tier"],
+                        dispatch["task_id"],
+                    )
+            else:
+                logger.info(
+                    "TIER_CLASSIFICATION session=%s type=inline",
+                    session_key,
+                )
+            return HookResult(action="continue")
+
+        unreg_fns: list[Callable[[], None]] = []
+        try:
+            unreg = hooks.register(
+                "tool:pre", on_dispatch_pre, priority=998, name="_tier_tracking"
+            )
+            unreg_fns.append(unreg)
+        except Exception:
+            logger.debug("Could not register tier tracking hook", exc_info=True)
+
+        try:
+            unreg = hooks.register(
+                "orchestrator:complete",
+                on_execution_complete,
+                priority=998,
+                name="_tier_summary",
+            )
+            unreg_fns.append(unreg)
+        except Exception:
+            logger.debug("Could not register tier summary hook", exc_info=True)
+
+        if not unreg_fns:
+            return None
+
+        def unregister_all() -> None:
+            for fn in unreg_fns:
+                try:
+                    fn()
+                except Exception:
+                    pass
+
+        return unregister_all
 
     def inject_message(
         self, instance_name: str, conversation_id: str, content: str

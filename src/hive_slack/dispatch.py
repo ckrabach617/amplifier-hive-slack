@@ -78,6 +78,13 @@ class DispatchWorkerTool:
                         "Used in TASKS.md tracking."
                     ),
                 },
+                "tier": {
+                    "type": "string",
+                    "description": (
+                        "Which tier this task was classified as "
+                        "(e.g., '2', '2+', '3'). For observability."
+                    ),
+                },
             },
             "required": ["task", "task_id"],
         }
@@ -88,11 +95,19 @@ class DispatchWorkerTool:
 
         task = input.get("task", "")
         task_id = input.get("task_id", "")
+        tier = input.get("tier", "unknown")
 
         if not task:
             return ToolResult(success=False, output="No task provided")
         if not task_id:
             return ToolResult(success=False, output="No task_id provided")
+
+        logger.info(
+            "TIER_DISPATCH tier=%s task_id=%s task=%s",
+            tier,
+            task_id,
+            task[:100],
+        )
 
         self._worker_counter += 1
 
