@@ -48,6 +48,12 @@ class InProcessSessionManager:
         self._recipes_available: bool = True  # Set False if recipe loading fails
         self._capability_warned: set[str] = set()  # session_keys already warned
 
+        # Worker lifecycle manager -- shared across all dispatch tools
+        from hive_slack.worker_manager import WorkerManager
+
+        self._worker_manager = WorkerManager(timeout=600.0)  # 10 min default
+        self._watchdog_task: asyncio.Task[None] | None = None
+
     async def start(self) -> None:
         """Load and prepare bundles for all instances. Called once at startup."""
         from amplifier_foundation import Bundle, load_bundle
@@ -116,6 +122,11 @@ class InProcessSessionManager:
             "All bundles ready (%d bundle(s) for %d instance(s))",
             len(self._prepared),
             len(self._config.instances),
+        )
+
+        # Start the worker timeout watchdog
+        self._watchdog_task = asyncio.create_task(
+            self._worker_manager.run_timeout_watchdog()
         )
 
     @staticmethod
@@ -469,6 +480,7 @@ class InProcessSessionManager:
                         instance_name=instance_name,
                         working_dir=instance.working_dir,
                         director_conversation_id=conversation_id,
+                        worker_manager=self._worker_manager,
                     )
                 )
 
@@ -560,6 +572,21 @@ class InProcessSessionManager:
             "Stopping session manager, cleaning up %d sessions",
             len(self._sessions),
         )
+        # Stop the timeout watchdog first
+        if self._watchdog_task is not None:
+            self._watchdog_task.cancel()
+            try:
+                await self._watchdog_task
+            except asyncio.CancelledError:
+                pass
+            self._watchdog_task = None
+
+        # Cancel all active workers before tearing down sessions
+        active = self._worker_manager.get_active()
+        if active:
+            logger.info("Cancelling %d active worker(s)...", len(active))
+            await self._worker_manager.cancel_all()
+
         for key, session in list(self._sessions.items()):
             try:
                 await session.cleanup()

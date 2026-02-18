@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from hive_slack.task_store import TaskStore
+from hive_slack.worker_manager import WorkerManager
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ class DispatchWorkerTool:
         instance_name: str,
         working_dir: str,
         director_conversation_id: str = "",
+        worker_manager: WorkerManager | None = None,
     ) -> None:
         self._manager = session_manager
         self._instance_name = instance_name
@@ -40,7 +42,7 @@ class DispatchWorkerTool:
         self._director_conversation_id = director_conversation_id
         self._worker_counter = 0
         self._store = TaskStore(self._working_dir / "TASKS.md")
-        self._active_tasks: dict[str, asyncio.Task] = {}
+        self._workers = worker_manager or WorkerManager()
 
     @property
     def name(self) -> str:
@@ -102,10 +104,7 @@ class DispatchWorkerTool:
             self._run_worker(task, task_id),
             name=f"worker-{task_id}",
         )
-        self._active_tasks[task_id] = worker_task
-        worker_task.add_done_callback(
-            lambda t, tid=task_id: self._on_worker_done(tid, t)
-        )
+        self._workers.register(task_id, worker_task, description=task[:100])
 
         return ToolResult(
             success=True,
@@ -148,6 +147,16 @@ class DispatchWorkerTool:
                 "Full details in TASKS.md.",
             )
 
+        except asyncio.CancelledError:
+            logger.warning("Background worker cancelled: %s", task_id)
+            await self._store.fail_task(task_id, "cancelled")
+
+            self._manager.notify(
+                self._instance_name,
+                self._director_conversation_id,
+                f'[WORKER REPORT] Task "{task_id}" was cancelled.',
+            )
+
         except Exception as e:
             logger.exception("Background worker failed: %s", task_id)
             await self._store.fail_task(task_id, str(e))
@@ -157,19 +166,4 @@ class DispatchWorkerTool:
                 self._instance_name,
                 self._director_conversation_id,
                 f'[WORKER REPORT] Task "{task_id}" FAILED.\nError: {e}',
-            )
-
-    def _on_worker_done(self, task_id: str, task: asyncio.Task) -> None:
-        """Handle worker task completion -- log unhandled exceptions."""
-        self._active_tasks.pop(task_id, None)
-        if task.cancelled():
-            logger.info("Worker %s was cancelled", task_id)
-            return
-        exc = task.exception()
-        if exc:
-            logger.error(
-                "Worker %s raised unhandled exception: %s",
-                task_id,
-                exc,
-                exc_info=exc,
             )
