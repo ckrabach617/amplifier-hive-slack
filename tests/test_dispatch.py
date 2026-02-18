@@ -314,3 +314,53 @@ class TestMultipleDispatches:
         assert len(tf.get_section(SECTION_ACTIVE)) == 0
         done_ids = {t.id for t in tf.get_section(SECTION_DONE)}
         assert done_ids == {"task-a", "task-b"}
+
+
+# ---------------------------------------------------------------------------
+# _build_verifier_prompt
+# ---------------------------------------------------------------------------
+
+
+class TestVerifierPrompt:
+    def test_contains_remember_instruction(self, tool: DispatchWorkerTool):
+        prompt = tool._build_verifier_prompt("fire-pit")
+        assert "REMEMBER.md" in prompt
+
+    def test_references_research_file(self, tool: DispatchWorkerTool):
+        prompt = tool._build_verifier_prompt("fire-pit")
+        assert ".outbox/fire-pit-research.md" in prompt
+
+    def test_contains_verification_ratings(self, tool: DispatchWorkerTool):
+        prompt = tool._build_verifier_prompt("fire-pit")
+        assert "CONFIRMED" in prompt
+        assert "CONFLICTING" in prompt
+        assert "UNVERIFIED" in prompt
+
+    def test_contains_output_file_path(self, tool: DispatchWorkerTool):
+        prompt = tool._build_verifier_prompt("fire-pit")
+        assert ".outbox/fire-pit-verification.md" in prompt
+
+
+# ---------------------------------------------------------------------------
+# _build_researcher_prompt
+# ---------------------------------------------------------------------------
+
+
+class TestResearcherPrompt:
+    def test_contains_remember_instruction(self, tool: DispatchWorkerTool):
+        prompt = tool._build_researcher_prompt("Research fire pits", "fire-pit")
+        assert "REMEMBER.md" in prompt
+
+    def test_contains_original_task(self, tool: DispatchWorkerTool):
+        prompt = tool._build_researcher_prompt("Research fire pits", "fire-pit")
+        assert "Research fire pits" in prompt
+
+    def test_contains_output_file_path(self, tool: DispatchWorkerTool):
+        prompt = tool._build_researcher_prompt("Research fire pits", "fire-pit")
+        assert ".outbox/fire-pit-research.md" in prompt
+
+    def test_contains_structure_instructions(self, tool: DispatchWorkerTool):
+        prompt = tool._build_researcher_prompt("Research fire pits", "fire-pit")
+        assert "Summary" in prompt
+        assert "Claims" in prompt
+        assert "source" in prompt.lower()

@@ -96,6 +96,32 @@ class DispatchWorkerTool:
             "required": ["task", "task_id"],
         }
 
+    def _build_verifier_prompt(self, task_id: str) -> str:
+        """Build the verifier worker's prompt with claim-checking instructions."""
+        return (
+            "First read REMEMBER.md for available tools, existing work products, "
+            "and gotchas.\n\n"
+            f"Read `.outbox/{task_id}-research.md` -- it contains research findings "
+            "with claims and sources.\n\n"
+            "For each claim:\n"
+            "1. Check whether the cited source actually supports the claim.\n"
+            "2. Search for at least one additional source to corroborate or contradict.\n"
+            "3. Rate confidence: CONFIRMED, CONFLICTING, or UNVERIFIED.\n\n"
+            f"Save your verification to `.outbox/{task_id}-verification.md`"
+        )
+
+    def _build_researcher_prompt(self, task: str, task_id: str) -> str:
+        """Build the researcher worker's prompt with structured output instructions."""
+        return (
+            "First read REMEMBER.md for available tools, existing work products, "
+            "and gotchas.\n\n"
+            f"{task}\n\n"
+            f"Save your complete findings to `.outbox/{task_id}-research.md`\n\n"
+            "Structure your output with:\n"
+            "- A Summary section\n"
+            "- Numbered Claims with the source URL/reference for each claim"
+        )
+
     async def execute(self, input: dict[str, Any]) -> Any:
         """Dispatch a background worker and return immediately."""
         from amplifier_core.models import ToolResult
