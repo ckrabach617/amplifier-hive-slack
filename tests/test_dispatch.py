@@ -434,6 +434,91 @@ class TestVerifiedWorkerSuccess:
 
 
 # ---------------------------------------------------------------------------
+# _run_verified_worker -- verification failure paths
+# ---------------------------------------------------------------------------
+
+
+class TestVerifiedWorkerVerificationFailure:
+    @pytest.mark.asyncio
+    async def test_verification_exception_reports_partial(
+        self,
+        tool: DispatchWorkerTool,
+        manager: FakeSessionManager,
+        working_dir: Path,
+    ):
+        outbox = working_dir / ".outbox"
+        outbox.mkdir()
+        await tool._store.add_active("vt-vfail", "Research X")
+        tool._worker_counter = 1
+
+        call_count = 0
+
+        async def mock_sessions(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                (outbox / "vt-vfail-research.md").write_text(
+                    "## Summary\nFindings\n\n## Claims\n"
+                    "1. Claim A -- Source: http://a.com"
+                )
+                return "Research done"
+            else:
+                raise RuntimeError("Verifier exploded")
+
+        manager.execute = AsyncMock(side_effect=mock_sessions)
+
+        await tool._run_verified_worker("Research X", "vt-vfail")
+
+        # Task marked as failed with partial info
+        tf = read_tasks(working_dir)
+        active = tf.get_section(SECTION_ACTIVE)
+        assert len(active) == 1
+        assert "failed" in active[0].fields["status"]
+        # Director notified about partial completion
+        manager.notify.assert_called_once()
+        report = manager.notify.call_args[0][2]
+        assert "verification failed" in report.lower()
+
+    @pytest.mark.asyncio
+    async def test_verification_timeout_reports_partial(
+        self,
+        tool: DispatchWorkerTool,
+        manager: FakeSessionManager,
+        working_dir: Path,
+        monkeypatch,
+    ):
+        monkeypatch.setattr("hive_slack.dispatch.PHASE_TIMEOUT", 0.01)
+        outbox = working_dir / ".outbox"
+        outbox.mkdir()
+        await tool._store.add_active("vt-vto", "Research X")
+        tool._worker_counter = 1
+
+        call_count = 0
+
+        async def mock_sessions(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                (outbox / "vt-vto-research.md").write_text(
+                    "## Summary\nFindings\n\n## Claims\n"
+                    "1. Claim A -- Source: http://a.com"
+                )
+                return "Research done"
+            else:
+                await asyncio.sleep(1000)
+
+        manager.execute = AsyncMock(side_effect=mock_sessions)
+
+        await tool._run_verified_worker("Research X", "vt-vto")
+
+        tf = read_tasks(working_dir)
+        active = tf.get_section(SECTION_ACTIVE)
+        assert "failed" in active[0].fields["status"]
+        report = manager.notify.call_args[0][2]
+        assert "verification failed" in report.lower()
+
+
+# ---------------------------------------------------------------------------
 # _run_verified_worker -- research failure paths
 # ---------------------------------------------------------------------------
 

@@ -183,16 +183,43 @@ class DispatchWorkerTool:
             logger.info("Verified worker Phase 2 (verification): %s", task_id)
             verify_conv = f"worker:{task_id}:{self._worker_counter}:verify"
 
-            await asyncio.wait_for(
-                self._manager.execute(
+            try:
+                await asyncio.wait_for(
+                    self._manager.execute(
+                        self._instance_name,
+                        verify_conv,
+                        self._build_verifier_prompt(task_id),
+                    ),
+                    timeout=PHASE_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Verified worker verification timed out: %s", task_id)
+                await self._store.fail_task(task_id, "Verification timed out")
+                self._manager.notify(
                     self._instance_name,
-                    verify_conv,
-                    self._build_verifier_prompt(task_id),
-                ),
-                timeout=PHASE_TIMEOUT,
-            )
+                    self._director_conversation_id,
+                    f'[WORKER REPORT] Task "{task_id}" partially complete.\n'
+                    "Research completed but verification failed.\n"
+                    f"Unverified results in .outbox/{task_id}-research.md",
+                )
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.exception("Verified worker verification failed: %s", task_id)
+                await self._store.fail_task(task_id, f"Verification failed: {e}")
+                self._manager.notify(
+                    self._instance_name,
+                    self._director_conversation_id,
+                    f'[WORKER REPORT] Task "{task_id}" partially complete.\n'
+                    "Research completed but verification failed.\n"
+                    f"Unverified results in .outbox/{task_id}-research.md",
+                )
+                return
 
-            verification_content = verification_file.read_text()
+            verification_content = (
+                verification_file.read_text() if verification_file.exists() else ""
+            )
 
             # Synthesis
             summary = (
