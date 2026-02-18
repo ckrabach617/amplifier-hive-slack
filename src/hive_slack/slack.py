@@ -265,236 +265,235 @@ class SlackConnector:
         is_new_thread: bool = False,
         has_cross_ref: bool = False,
     ) -> None:
-        """Execute a prompt with progress indicators and message queuing."""
+        """Execute a prompt with progress indicators and iterative queue drain.
+
+        After each execution, any messages that arrived while processing are
+        drained iteratively (via a ``while True`` loop) rather than recursively,
+        preventing stack overflow under sustained message load.
+        """
         # Check if this channel has progress suppressed (threads:off = Director mode)
         channel_config = await self._channel_config.get(channel)
         quiet_mode = channel_config.threads == "off"
 
-        # React with ⏳ on the user's message
-        try:
-            await self._app.client.reactions_add(
-                channel=channel,
-                timestamp=user_ts,
-                name="hourglass_flowing_sand",
-            )
-        except Exception:
-            pass  # Best effort
-
-        # Post editable status message (skip in quiet mode)
-        status_msg = None
-        if not quiet_mode:
+        while True:
+            # React with ⏳ on the user's message
             try:
-                result = await self._app.client.chat_postMessage(
-                    channel=channel,
-                    thread_ts=thread_ts or None,
-                    text="\u2699\ufe0f Working...",
-                )
-                status_msg = result.get("ts")
-            except Exception:
-                logger.debug("Could not post status message")
-
-        # Track this execution
-        self._active_executions[conversation_id] = {
-            "status_ts": status_msg,
-            "user_ts": user_ts,
-            "channel": channel,
-            "thread_ts": thread_ts,
-            "instance_name": instance_name,
-        }
-
-        # Adaptive status rendering state
-        import time as _time2
-
-        _status_todos: list[dict] | None = None  # None = simple mode
-        _status_tool: str = ""
-        _status_agent: str = ""
-        _last_status_update: float = 0.0
-        _STATUS_THROTTLE: float = 2.0
-        _start_time: float = _time2.monotonic()
-
-        async def on_progress(event_type: str, data: dict) -> None:
-            nonlocal _status_todos, _status_tool, _status_agent, _last_status_update
-            if not status_msg:
-                return
-
-            # Update state from events
-            if event_type in ("tool:pre", "tool:start"):
-                _status_tool = data.get("tool", "")
-                agent = data.get("agent", "")
-                if agent:
-                    _status_agent = agent
-            elif event_type in ("tool:post", "tool:end"):
-                todos = data.get("todos")
-                if todos:
-                    _status_todos = todos
-                # Clear tool (between tools now)
-                _status_tool = ""
-                _status_agent = ""
-            elif event_type in ("complete", "error"):
-                return  # Handled below
-
-            # Throttle updates to every 2 seconds
-            now = _time2.monotonic()
-            if now - _last_status_update < _STATUS_THROTTLE:
-                return
-            _last_status_update = now
-
-            # Render based on mode
-            duration_str = _format_duration(now - _start_time)
-            queued = len(self._message_queues.get(conversation_id, []))
-
-            if _status_todos:
-                # Plan mode: show todo list
-                text = _render_todo_status(
-                    _status_todos,
-                    _status_tool,
-                    instance.persona.name,
-                    duration_str,
-                    queued,
-                )
-            else:
-                # Simple mode: just tool name
-                if _status_tool == "delegate" and _status_agent:
-                    text = f"⚙️ Delegating to {_status_agent}..."
-                elif _status_tool:
-                    text = f"⚙️ {_friendly_tool_name(_status_tool)}..."
-                else:
-                    text = "⚙️ Working..."
-
-                if duration_str:
-                    text += f" · {duration_str}"
-                if queued:
-                    text += f" · {queued} message{'s' if queued != 1 else ''} queued"
-
-            try:
-                logger.debug("Updating status: %s", text[:80])
-                await self._app.client.chat_update(
-                    channel=channel,
-                    ts=status_msg,
-                    text=text,
-                )
-            except Exception:
-                logger.debug("Failed to update status message", exc_info=True)
-
-        # Build Slack context for session creation
-        slack_context = {
-            "client": self._app.client,
-            "channel": channel,
-            "thread_ts": thread_ts,
-            "user_ts": user_ts,
-        }
-
-        try:
-            # Execute
-            response = await self._service.execute(
-                instance_name,
-                conversation_id,
-                prompt,
-                on_progress=on_progress,
-                slack_context=slack_context,
-            )
-
-            # Delete status message
-            if status_msg:
-                try:
-                    await self._app.client.chat_delete(
-                        channel=channel,
-                        ts=status_msg,
-                    )
-                except Exception:
-                    pass
-
-            # Process outbox (file sharing)
-            working_dir = Path(instance.working_dir).expanduser()
-            await self._process_outbox(working_dir, channel, thread_ts, instance)
-
-            # Post final response with persona
-            response_text = markdown_to_slack(response)
-
-            # Append onboarding suffix if applicable
-            if onboarding and hasattr(onboarding, "get_response_suffix"):
-                import asyncio as _asyncio
-
-                duration = _time2.monotonic() - _start_time
-                suffix = onboarding.get_response_suffix(
-                    is_new_thread, duration, has_cross_ref
-                )
-                if suffix:
-                    response_text = f"{response_text}\n{suffix}"
-                # Fire-and-forget save (prevent GC collection)
-                _save_task = _asyncio.create_task(onboarding.save())
-                self._background_tasks.add(_save_task)
-                _save_task.add_done_callback(self._background_tasks.discard)
-
-            # Guard against empty response text (can happen when extended
-            # thinking produces reasoning but no visible text, e.g. after
-            # force-respond). Slack rejects empty messages with 'no_text'.
-            if not response_text or not response_text.strip():
-                logger.warning(
-                    "Empty response text for %s, skipping Slack post",
-                    conversation_id,
-                )
-            else:
-                result = await say(
-                    text=response_text,
-                    thread_ts=thread_ts or None,
-                    username=instance.persona.name,
-                    icon_emoji=instance.persona.emoji,
-                )
-                self._track_prompt(result, instance_name, conversation_id, prompt)
-                self._set_thread_owner(conversation_id, instance_name)
-
-        except Exception:
-            logger.exception("Error in execution for %s", conversation_id)
-            # Delete status message on error too
-            if status_msg:
-                try:
-                    await self._app.client.chat_delete(
-                        channel=channel,
-                        ts=status_msg,
-                    )
-                except Exception:
-                    pass
-            await say(
-                text="Something's not working on my end. Try again?",
-                thread_ts=thread_ts or None,
-                username=instance.persona.name,
-                icon_emoji=instance.persona.emoji,
-            )
-        finally:
-            # Remove ⏳ reaction
-            try:
-                await self._app.client.reactions_remove(
+                await self._app.client.reactions_add(
                     channel=channel,
                     timestamp=user_ts,
                     name="hourglass_flowing_sand",
                 )
             except Exception:
-                pass
+                pass  # Best effort
 
-            # Clear active execution
-            self._active_executions.pop(conversation_id, None)
+            # Post editable status message (skip in quiet mode)
+            status_msg = None
+            if not quiet_mode:
+                try:
+                    result = await self._app.client.chat_postMessage(
+                        channel=channel,
+                        thread_ts=thread_ts or None,
+                        text="\u2699\ufe0f Working...",
+                    )
+                    status_msg = result.get("ts")
+                except Exception:
+                    logger.debug("Could not post status message")
 
-            # Process queued messages
-            queued = self._message_queues.pop(conversation_id, [])
-            if queued:
-                combined = "\n".join(f"- {m}" for m in queued)
-                batch_prompt = (
-                    "[You completed a previous task. The user sent additional "
-                    "messages while you were working. Please address these:]\n"
-                    f"{combined}"
-                )
-                # Recursively execute the batch (will get its own status message)
-                await self._execute_with_progress(
+            # Track this execution
+            self._active_executions[conversation_id] = {
+                "status_ts": status_msg,
+                "user_ts": user_ts,
+                "channel": channel,
+                "thread_ts": thread_ts,
+                "instance_name": instance_name,
+            }
+
+            # Adaptive status rendering state
+            import time as _time2
+
+            _status_todos: list[dict] | None = None  # None = simple mode
+            _status_tool: str = ""
+            _status_agent: str = ""
+            _last_status_update: float = 0.0
+            _STATUS_THROTTLE: float = 2.0
+            _start_time: float = _time2.monotonic()
+
+            async def on_progress(event_type: str, data: dict) -> None:
+                nonlocal _status_todos, _status_tool, _status_agent, _last_status_update
+                if not status_msg:
+                    return
+
+                # Update state from events
+                if event_type in ("tool:pre", "tool:start"):
+                    _status_tool = data.get("tool", "")
+                    agent = data.get("agent", "")
+                    if agent:
+                        _status_agent = agent
+                elif event_type in ("tool:post", "tool:end"):
+                    todos = data.get("todos")
+                    if todos:
+                        _status_todos = todos
+                    # Clear tool (between tools now)
+                    _status_tool = ""
+                    _status_agent = ""
+                elif event_type in ("complete", "error"):
+                    return  # Handled below
+
+                # Throttle updates to every 2 seconds
+                now = _time2.monotonic()
+                if now - _last_status_update < _STATUS_THROTTLE:
+                    return
+                _last_status_update = now
+
+                # Render based on mode
+                duration_str = _format_duration(now - _start_time)
+                queued = len(self._message_queues.get(conversation_id, []))
+
+                if _status_todos:
+                    # Plan mode: show todo list
+                    text = _render_todo_status(
+                        _status_todos,
+                        _status_tool,
+                        instance.persona.name,
+                        duration_str,
+                        queued,
+                    )
+                else:
+                    # Simple mode: just tool name
+                    if _status_tool == "delegate" and _status_agent:
+                        text = f"⚙️ Delegating to {_status_agent}..."
+                    elif _status_tool:
+                        text = f"⚙️ {_friendly_tool_name(_status_tool)}..."
+                    else:
+                        text = "⚙️ Working..."
+
+                    if duration_str:
+                        text += f" · {duration_str}"
+                    if queued:
+                        text += f" · {queued} message{'s' if queued != 1 else ''} queued"
+
+                try:
+                    logger.debug("Updating status: %s", text[:80])
+                    await self._app.client.chat_update(
+                        channel=channel,
+                        ts=status_msg,
+                        text=text,
+                    )
+                except Exception:
+                    logger.debug("Failed to update status message", exc_info=True)
+
+            # Build Slack context for session creation
+            slack_context = {
+                "client": self._app.client,
+                "channel": channel,
+                "thread_ts": thread_ts,
+                "user_ts": user_ts,
+            }
+
+            try:
+                # Execute
+                response = await self._service.execute(
                     instance_name,
-                    instance,
                     conversation_id,
-                    batch_prompt,
-                    channel,
-                    thread_ts,
-                    user_ts,
-                    say,
+                    prompt,
+                    on_progress=on_progress,
+                    slack_context=slack_context,
                 )
+
+                # Delete status message
+                if status_msg:
+                    try:
+                        await self._app.client.chat_delete(
+                            channel=channel,
+                            ts=status_msg,
+                        )
+                    except Exception:
+                        pass
+
+                # Process outbox (file sharing)
+                working_dir = Path(instance.working_dir).expanduser()
+                await self._process_outbox(working_dir, channel, thread_ts, instance)
+
+                # Post final response with persona
+                response_text = markdown_to_slack(response)
+
+                # Append onboarding suffix if applicable
+                if onboarding and hasattr(onboarding, "get_response_suffix"):
+                    import asyncio as _asyncio
+
+                    duration = _time2.monotonic() - _start_time
+                    suffix = onboarding.get_response_suffix(
+                        is_new_thread, duration, has_cross_ref
+                    )
+                    if suffix:
+                        response_text = f"{response_text}\n{suffix}"
+                    # Fire-and-forget save (prevent GC collection)
+                    _save_task = _asyncio.create_task(onboarding.save())
+                    self._background_tasks.add(_save_task)
+                    _save_task.add_done_callback(self._background_tasks.discard)
+
+                # Guard against empty response text (can happen when extended
+                # thinking produces reasoning but no visible text, e.g. after
+                # force-respond). Slack rejects empty messages with 'no_text'.
+                if not response_text or not response_text.strip():
+                    logger.warning(
+                        "Empty response text for %s, skipping Slack post",
+                        conversation_id,
+                    )
+                else:
+                    result = await say(
+                        text=response_text,
+                        thread_ts=thread_ts or None,
+                        username=instance.persona.name,
+                        icon_emoji=instance.persona.emoji,
+                    )
+                    self._track_prompt(result, instance_name, conversation_id, prompt)
+                    self._set_thread_owner(conversation_id, instance_name)
+
+            except Exception:
+                logger.exception("Error in execution for %s", conversation_id)
+                # Delete status message on error too
+                if status_msg:
+                    try:
+                        await self._app.client.chat_delete(
+                            channel=channel,
+                            ts=status_msg,
+                        )
+                    except Exception:
+                        pass
+                await say(
+                    text="Something's not working on my end. Try again?",
+                    thread_ts=thread_ts or None,
+                    username=instance.persona.name,
+                    icon_emoji=instance.persona.emoji,
+                )
+            finally:
+                # Remove ⏳ reaction
+                try:
+                    await self._app.client.reactions_remove(
+                        channel=channel,
+                        timestamp=user_ts,
+                        name="hourglass_flowing_sand",
+                    )
+                except Exception:
+                    pass
+
+                # Clear active execution
+                self._active_executions.pop(conversation_id, None)
+
+                # Drain queued messages iteratively (not recursively)
+                queued = self._message_queues.pop(conversation_id, [])
+                if queued:
+                    combined = "\n".join(f"- {m}" for m in queued)
+                    prompt = (
+                        "[You completed a previous task. The user sent additional "
+                        "messages while you were working. Please address these:]\n"
+                        f"{combined}"
+                    )
+                    # Onboarding only applies to the first execution
+                    onboarding = None
+                    continue  # Loop back for the next execution
+                break  # No more queued messages, exit the loop
 
     async def _handle_mention(self, event: dict, say) -> None:
         """Handle @mention events — the core message flow."""
