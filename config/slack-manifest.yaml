@@ -5,6 +5,9 @@ features:
   bot_user:
     display_name: Amplifier
     always_online: true
+  slash_commands:
+    - command: /ampstatus
+      description: Show system health status
 
 oauth_config:
   scopes:
@@ -23,6 +26,7 @@ oauth_config:
       - files:read
       - files:write
       - im:write
+      - commands
 
 settings:
   event_subscriptions:

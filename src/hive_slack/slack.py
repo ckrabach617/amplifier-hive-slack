@@ -109,7 +109,7 @@ class SlackConnector:
         self._app.event("reaction_added")(self._handle_reaction)
 
         # Slash commands
-        self._app.command("/status")(self._handle_status_command)
+        self._app.command("/ampstatus")(self._handle_status_command)
 
         # Handle Block Kit button clicks (for approval system)
         import re as _re
@@ -1273,7 +1273,7 @@ class SlackConnector:
             self._set_thread_owner(conversation_id, "_ROUNDTABLE")
 
     async def _handle_status_command(self, ack, respond, command) -> None:
-        """Handle /status slash command -- return ephemeral health snapshot."""
+        """Handle /ampstatus slash command -- return ephemeral health snapshot."""
         await ack()
 
         # Collect connection health from SlackConnection properties

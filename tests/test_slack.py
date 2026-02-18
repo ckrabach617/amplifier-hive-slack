@@ -2181,7 +2181,7 @@ class TestConnectionWatchdog:
 
 
 # ---------------------------------------------------------------------------
-# Milestone 5 — /status command
+# Milestone 5 — /ampstatus command
 # ---------------------------------------------------------------------------
 
 
@@ -2393,7 +2393,7 @@ class TestFormatStatus:
 
 
 class TestStatusCommand:
-    """Test /status slash command handler wiring."""
+    """Test /ampstatus slash command handler wiring."""
 
     @pytest.mark.asyncio
     async def test_handler_acks_and_responds_ephemeral(self):
