@@ -1,9 +1,12 @@
 """Tests for InProcessSessionManager."""
 
 import asyncio
+import time
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+from hive_slack.worker_manager import WorkerInfo
 
 from hive_slack.config import (
     HiveSlackConfig,
@@ -396,3 +399,163 @@ class TestOnProgressCallback:
             "alpha", "conv-1", "hello", on_progress=bad_callback
         )
         assert result == "response"
+
+
+class TestGetStatus:
+    """Test status collection from InProcessSessionManager."""
+
+    def test_returns_all_expected_keys(self):
+        """get_status() returns a dict with the full set of status keys."""
+        manager = InProcessSessionManager(make_config())
+        manager._started_at = time.monotonic() - 100
+
+        status = manager.get_status()
+
+        assert "uptime_seconds" in status
+        assert "recipes_available" in status
+        assert "workers" in status
+        assert "sessions_count" in status
+        assert "executing_count" in status
+        assert "queued_message_count" in status
+        assert "connection" in status
+
+    def test_uptime_reflects_elapsed_time(self):
+        """uptime_seconds reflects time since _started_at was set."""
+        manager = InProcessSessionManager(make_config())
+        manager._started_at = time.monotonic() - 3600
+
+        status = manager.get_status()
+
+        assert 3599 <= status["uptime_seconds"] <= 3601
+
+    def test_uptime_none_when_not_started(self):
+        """uptime_seconds is None when service hasn't started."""
+        manager = InProcessSessionManager(make_config())
+
+        status = manager.get_status()
+
+        assert status["uptime_seconds"] is None
+
+    def test_recipes_available_flag(self):
+        """recipes_available reflects the internal flag."""
+        manager = InProcessSessionManager(make_config())
+        manager._started_at = time.monotonic()
+        manager._recipes_available = False
+
+        status = manager.get_status()
+
+        assert status["recipes_available"] is False
+
+    def test_sessions_and_executing_counts(self):
+        """sessions_count and executing_count reflect internal state."""
+        manager = InProcessSessionManager(make_config())
+        manager._started_at = time.monotonic()
+        manager._sessions = {"a:1": MagicMock(), "b:2": MagicMock(), "c:3": MagicMock()}
+        manager._executing = {"a:1"}
+
+        status = manager.get_status()
+
+        assert status["sessions_count"] == 3
+        assert status["executing_count"] == 1
+
+    def test_queued_message_count_passed_through(self):
+        """queued_message_count is passed through from the caller."""
+        manager = InProcessSessionManager(make_config())
+        manager._started_at = time.monotonic()
+
+        status = manager.get_status(queued_message_count=5)
+
+        assert status["queued_message_count"] == 5
+
+    def test_active_workers_included(self):
+        """Workers section includes task_id, tier, and elapsed time."""
+        manager = InProcessSessionManager(make_config())
+        manager._started_at = time.monotonic()
+
+        mock_task = MagicMock()
+        mock_task.done.return_value = False
+        manager._worker_manager._workers = {
+            "test-task": WorkerInfo(
+                task_id="test-task",
+                description="Test work",
+                task=mock_task,
+                started_at=time.monotonic() - 120,
+                tier="2",
+            )
+        }
+
+        status = manager.get_status()
+
+        assert len(status["workers"]) == 1
+        w = status["workers"][0]
+        assert w["task_id"] == "test-task"
+        assert w["description"] == "Test work"
+        assert w["tier"] == "2"
+        assert 119 <= w["elapsed_seconds"] <= 121
+
+    def test_connection_health_healthy(self):
+        """Connection shows healthy when recent health check data provided."""
+        manager = InProcessSessionManager(make_config())
+        manager._started_at = time.monotonic()
+
+        now = time.monotonic()
+        connection_health = {
+            "started_at": now - 3600,
+            "last_health_check_at": now - 45,
+            "reconnect_count": 0,
+        }
+
+        status = manager.get_status(connection_health=connection_health)
+
+        assert status["connection"]["status"] == "healthy"
+        assert 44 <= status["connection"]["seconds_since_last_check"] <= 46
+        assert status["connection"]["reconnect_count"] == 0
+
+    def test_connection_health_starting(self):
+        """Connection shows starting when started but no health check yet."""
+        manager = InProcessSessionManager(make_config())
+        manager._started_at = time.monotonic()
+
+        connection_health = {
+            "started_at": time.monotonic() - 10,
+            "last_health_check_at": None,
+            "reconnect_count": 0,
+        }
+
+        status = manager.get_status(connection_health=connection_health)
+
+        assert status["connection"]["status"] == "starting"
+
+    def test_connection_health_unknown_when_no_data(self):
+        """Connection status is unknown when no health data provided."""
+        manager = InProcessSessionManager(make_config())
+        manager._started_at = time.monotonic()
+
+        status = manager.get_status()
+
+        assert status["connection"]["status"] == "unknown"
+
+    def test_graceful_degradation_worker_error(self):
+        """get_status() returns empty workers if WorkerManager throws."""
+        manager = InProcessSessionManager(make_config())
+        manager._started_at = time.monotonic()
+        manager._worker_manager.get_active = MagicMock(
+            side_effect=RuntimeError("broken")
+        )
+
+        status = manager.get_status()
+
+        assert status["workers"] == []
+        assert "uptime_seconds" in status
+
+    def test_graceful_degradation_connection_error(self):
+        """get_status() shows unavailable connection if health data throws."""
+        manager = InProcessSessionManager(make_config())
+        manager._started_at = time.monotonic()
+
+        bad_health: dict = MagicMock()
+        bad_health.get = MagicMock(side_effect=RuntimeError("busted"))
+
+        status = manager.get_status(connection_health=bad_health)
+
+        assert status["connection"]["status"] == "unavailable"

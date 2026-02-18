@@ -119,7 +119,7 @@ class DispatchWorkerTool:
             self._run_worker(task, task_id),
             name=f"worker-{task_id}",
         )
-        self._workers.register(task_id, worker_task, description=task[:100])
+        self._workers.register(task_id, worker_task, description=task[:100], tier=tier)
 
         return ToolResult(
             success=True,

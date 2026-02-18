@@ -23,6 +23,7 @@ class WorkerInfo:
     description: str
     task: asyncio.Task
     started_at: float = field(default_factory=time.monotonic)
+    tier: str = ""
 
 
 class WorkerManager:
@@ -41,12 +42,14 @@ class WorkerManager:
         self._workers: dict[str, WorkerInfo] = {}
         self._timeout = timeout
 
-    def register(self, task_id: str, task: asyncio.Task, description: str = "") -> None:
+    def register(
+        self, task_id: str, task: asyncio.Task, description: str = "", tier: str = ""
+    ) -> None:
         """Register a new worker task for tracking."""
         if task_id in self._workers:
             logger.warning("Worker %s already registered, replacing", task_id)
         self._workers[task_id] = WorkerInfo(
-            task_id=task_id, description=description, task=task
+            task_id=task_id, description=description, task=task, tier=tier
         )
         task.add_done_callback(lambda _t, tid=task_id: self._on_done(tid))
 

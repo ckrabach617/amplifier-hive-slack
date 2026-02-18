@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -47,6 +48,7 @@ class InProcessSessionManager:
         ] = {}  # session_key → queued messages
         self._recipes_available: bool = True  # Set False if recipe loading fails
         self._capability_warned: set[str] = set()  # session_keys already warned
+        self._started_at: float | None = None
 
         # Worker lifecycle manager -- shared across all dispatch tools
         from hive_slack.worker_manager import WorkerManager
@@ -56,6 +58,7 @@ class InProcessSessionManager:
 
     async def start(self) -> None:
         """Load and prepare bundles for all instances. Called once at startup."""
+        self._started_at = time.monotonic()
         from amplifier_foundation import Bundle, load_bundle
 
         # Collect unique bundles to avoid loading the same one twice
@@ -679,6 +682,85 @@ class InProcessSessionManager:
                 logger.info("Approval resolved for session %s", session_key)
                 return True
         return False
+
+    def get_status(
+        self,
+        queued_message_count: int = 0,
+        connection_health: dict | None = None,
+    ) -> dict:
+        """Collect system health snapshot for /status command.
+
+        Args:
+            queued_message_count: Total queued messages (from SlackConnector).
+            connection_health: Dict with started_at, last_health_check_at,
+                reconnect_count from SlackConnection properties.
+
+        Returns:
+            Dict with uptime, recipes, workers, sessions, connection status.
+            Each section degrades gracefully on error.
+        """
+        now = time.monotonic()
+
+        # Uptime
+        uptime = now - self._started_at if self._started_at is not None else None
+
+        # Workers
+        workers: list[dict] = []
+        try:
+            for info in self._worker_manager.get_active():
+                workers.append(
+                    {
+                        "task_id": info.task_id,
+                        "description": info.description,
+                        "tier": info.tier,
+                        "elapsed_seconds": now - info.started_at,
+                    }
+                )
+        except Exception:
+            logger.warning("Could not collect worker status", exc_info=True)
+
+        # Sessions and executions
+        try:
+            sessions_count = len(self._sessions)
+        except Exception:
+            sessions_count = 0
+
+        try:
+            executing_count = len(self._executing)
+        except Exception:
+            executing_count = 0
+
+        # Connection health
+        conn: dict = {
+            "status": "unknown",
+            "seconds_since_last_check": None,
+            "reconnect_count": 0,
+        }
+        if connection_health is not None:
+            try:
+                last_check = connection_health.get("last_health_check_at")
+                if last_check is not None:
+                    conn["status"] = "healthy"
+                    conn["seconds_since_last_check"] = now - last_check
+                elif connection_health.get("started_at") is not None:
+                    conn["status"] = "starting"
+                conn["reconnect_count"] = connection_health.get("reconnect_count", 0)
+            except Exception:
+                conn = {
+                    "status": "unavailable",
+                    "seconds_since_last_check": None,
+                    "reconnect_count": 0,
+                }
+
+        return {
+            "uptime_seconds": uptime,
+            "recipes_available": self._recipes_available,
+            "workers": workers,
+            "sessions_count": sessions_count,
+            "executing_count": executing_count,
+            "queued_message_count": queued_message_count,
+            "connection": conn,
+        }
 
     async def stop(self) -> None:
         """Cleanup all sessions."""
