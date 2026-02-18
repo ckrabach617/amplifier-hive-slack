@@ -812,8 +812,6 @@ class TestReactionHandling:
 
         mock_service.execute.assert_not_called()
         connector._app.client.reactions_add.assert_called_once()
-        call_kwargs = connector._app.client.reactions_add.call_kwargs
-        # Just verify it was called (kwargs checked via assert_called_once)
 
     @pytest.mark.asyncio
     async def test_ignores_reaction_on_non_bot_message(self):
@@ -1390,7 +1388,6 @@ class TestMessageQueuing:
     """Test message queuing when conversation is busy."""
 
     @pytest.mark.asyncio
-    @pytest.mark.asyncio
     async def test_active_execution_injects_or_queues_messages(self):
         """Messages to a busy conversation are injected or queued, not executed."""
         mock_service = AsyncMock()
@@ -1679,16 +1676,18 @@ class TestEmojiSummoning:
         connector._bot_user_id = "UBOTID"
         connector._app = AsyncMock()
         connector._app.client = AsyncMock()
-        connector._app.client.conversations_history = AsyncMock(return_value={
-            "messages": [{"text": "Check this code", "ts": "msg_ts_123"}]
-        })
+        connector._app.client.conversations_history = AsyncMock(
+            return_value={"messages": [{"text": "Check this code", "ts": "msg_ts_123"}]}
+        )
         connector._app.client.reactions_add = AsyncMock()
         connector._app.client.reactions_remove = AsyncMock()
-        connector._app.client.chat_postMessage = AsyncMock(return_value={"ts": "status_ts"})
+        connector._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "status_ts"}
+        )
         connector._app.client.chat_delete = AsyncMock()
-        connector._app.client.conversations_info = AsyncMock(return_value={
-            "channel": {"name": "general", "topic": {"value": ""}}
-        })
+        connector._app.client.conversations_info = AsyncMock(
+            return_value={"channel": {"name": "general", "topic": {"value": ""}}}
+        )
         connector._channel_config._timestamps["C99999"] = time.time()
         connector._channel_config._cache["C99999"] = ChannelConfig(name="general")
 
@@ -1756,11 +1755,13 @@ class TestRoundtable:
     async def test_pass_response_filtered(self):
         """[PASS] responses from instances are not posted."""
         mock_service = AsyncMock()
+
         # alpha passes, beta responds
         async def mock_execute(instance, conv, prompt, **kwargs):
             if instance == "alpha":
                 return "[PASS]"
             return "Here's my perspective on caching..."
+
         mock_service.execute = mock_execute
 
         config = make_config()
@@ -1770,13 +1771,20 @@ class TestRoundtable:
         connector._app.client = AsyncMock()
         connector._app.client.reactions_add = AsyncMock()
         connector._app.client.reactions_remove = AsyncMock()
-        connector._app.client.chat_postMessage = AsyncMock(return_value={"ts": "status_ts"})
+        connector._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "status_ts"}
+        )
         connector._app.client.chat_delete = AsyncMock()
 
         mock_say = AsyncMock(return_value={"ts": "resp_ts"})
 
         await connector._execute_roundtable(
-            "C1:t1", "What is caching?", "C1", "t1", "user_ts", mock_say,
+            "C1:t1",
+            "What is caching?",
+            "C1",
+            "t1",
+            "user_ts",
+            mock_say,
         )
 
         # say should be called only once (beta's response, not alpha's [PASS])
@@ -1797,13 +1805,20 @@ class TestRoundtable:
         connector._app.client = AsyncMock()
         connector._app.client.reactions_add = AsyncMock()
         connector._app.client.reactions_remove = AsyncMock()
-        connector._app.client.chat_postMessage = AsyncMock(return_value={"ts": "status_ts"})
+        connector._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "status_ts"}
+        )
         connector._app.client.chat_delete = AsyncMock()
 
         mock_say = AsyncMock()
 
         await connector._execute_roundtable(
-            "C1:t1", "Thanks!", "C1", "t1", "user_ts", mock_say,
+            "C1:t1",
+            "Thanks!",
+            "C1",
+            "t1",
+            "user_ts",
+            mock_say,
         )
 
         # say should NOT be called (all passed)
@@ -1822,11 +1837,18 @@ class TestRoundtable:
         connector._app.client = AsyncMock()
         connector._app.client.reactions_add = AsyncMock()
         connector._app.client.reactions_remove = AsyncMock()
-        connector._app.client.chat_postMessage = AsyncMock(return_value={"ts": "status_ts"})
+        connector._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "status_ts"}
+        )
         connector._app.client.chat_delete = AsyncMock()
 
         await connector._execute_roundtable(
-            "C1:t1", "Hello", "C1", "t1", "user_ts", AsyncMock(),
+            "C1:t1",
+            "Hello",
+            "C1",
+            "t1",
+            "user_ts",
+            AsyncMock(),
         )
 
         assert connector._get_thread_owner("C1:t1") == "_ROUNDTABLE"
@@ -1837,22 +1859,27 @@ class TestFormatDuration:
 
     def test_under_10_seconds_empty(self):
         from hive_slack.slack import _format_duration
+
         assert _format_duration(5.0) == ""
 
     def test_seconds(self):
         from hive_slack.slack import _format_duration
+
         assert _format_duration(30.0) == "30s"
 
     def test_minutes_and_seconds(self):
         from hive_slack.slack import _format_duration
+
         assert _format_duration(90.0) == "1m 30s"
 
     def test_exact_minutes(self):
         from hive_slack.slack import _format_duration
+
         assert _format_duration(120.0) == "2m"
 
     def test_zero(self):
         from hive_slack.slack import _format_duration
+
         assert _format_duration(0.0) == ""
 
 
@@ -1861,10 +1888,23 @@ class TestRenderTodoStatus:
 
     def test_basic_rendering(self):
         from hive_slack.slack import _render_todo_status
+
         todos = [
-            {"content": "Read files", "status": "completed", "activeForm": "Reading files"},
-            {"content": "Analyze code", "status": "in_progress", "activeForm": "Analyzing code"},
-            {"content": "Write report", "status": "pending", "activeForm": "Writing report"},
+            {
+                "content": "Read files",
+                "status": "completed",
+                "activeForm": "Reading files",
+            },
+            {
+                "content": "Analyze code",
+                "status": "in_progress",
+                "activeForm": "Analyzing code",
+            },
+            {
+                "content": "Write report",
+                "status": "pending",
+                "activeForm": "Writing report",
+            },
         ]
         result = _render_todo_status(todos, "read_file", "Alpha", "45s", 0)
         assert "✅" in result
@@ -1876,6 +1916,7 @@ class TestRenderTodoStatus:
 
     def test_truncates_many_completed(self):
         from hive_slack.slack import _render_todo_status
+
         todos = [
             {"content": f"Task {i}", "status": "completed", "activeForm": f"Task {i}"}
             for i in range(5)
@@ -1888,11 +1929,16 @@ class TestRenderTodoStatus:
 
     def test_truncates_many_pending(self):
         from hive_slack.slack import _render_todo_status
+
         todos = [
             {"content": "Done", "status": "completed", "activeForm": "Done"},
             {"content": "Current", "status": "in_progress", "activeForm": "Working"},
         ] + [
-            {"content": f"Pending {i}", "status": "pending", "activeForm": f"Pending {i}"}
+            {
+                "content": f"Pending {i}",
+                "status": "pending",
+                "activeForm": f"Pending {i}",
+            }
             for i in range(5)
         ]
         result = _render_todo_status(todos, "bash", "Alpha", "", 0)
@@ -1900,6 +1946,7 @@ class TestRenderTodoStatus:
 
     def test_shows_queued_messages(self):
         from hive_slack.slack import _render_todo_status
+
         todos = [
             {"content": "Task", "status": "in_progress", "activeForm": "Working"},
         ]
@@ -1908,6 +1955,7 @@ class TestRenderTodoStatus:
 
     def test_no_tool_shows_thinking(self):
         from hive_slack.slack import _render_todo_status
+
         todos = [
             {"content": "Task", "status": "in_progress", "activeForm": "Working"},
         ]
@@ -1916,6 +1964,7 @@ class TestRenderTodoStatus:
 
     def test_delegate_tool_text(self):
         from hive_slack.slack import _render_todo_status
+
         todos = [
             {"content": "Task", "status": "in_progress", "activeForm": "Working"},
         ]
@@ -1924,14 +1973,20 @@ class TestRenderTodoStatus:
 
     def test_uses_active_form_for_in_progress(self):
         from hive_slack.slack import _render_todo_status
+
         todos = [
-            {"content": "Run tests", "status": "in_progress", "activeForm": "Running tests"},
+            {
+                "content": "Run tests",
+                "status": "in_progress",
+                "activeForm": "Running tests",
+            },
         ]
         result = _render_todo_status(todos, "", "Alpha", "", 0)
         assert "Running tests" in result
 
     def test_header_without_duration(self):
         from hive_slack.slack import _render_todo_status
+
         todos = [
             {"content": "Task", "status": "pending", "activeForm": "Working"},
         ]
@@ -1956,7 +2011,9 @@ class TestReconnect:
             await connector.reconnect()
 
             # New handler was created with correct args
-            MockHandler.assert_called_once_with(connector._connection._app, config.slack.app_token)
+            MockHandler.assert_called_once_with(
+                connector._connection._app, config.slack.app_token
+            )
             # New handler was connected
             new_handler.connect_async.assert_called_once()
 
@@ -2099,7 +2156,9 @@ class TestConnectionWatchdog:
         """If reconnect raises, the watchdog continues running."""
         config = make_config()
         connector = SlackConnector(config, AsyncMock())
-        connector._connection.reconnect = AsyncMock(side_effect=RuntimeError("reconnect failed"))
+        connector._connection.reconnect = AsyncMock(
+            side_effect=RuntimeError("reconnect failed")
+        )
         connector._connection._app = AsyncMock()
         connector._connection._app.client.auth_test = AsyncMock(
             side_effect=Exception("connection lost")
@@ -2119,3 +2178,319 @@ class TestConnectionWatchdog:
 
         # Should have attempted reconnect twice (at iteration 8 and 16)
         assert connector._connection.reconnect.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Milestone 5 — /status command
+# ---------------------------------------------------------------------------
+
+
+class TestFormatUptime:
+    """Test uptime formatting (days/hours/minutes)."""
+
+    def test_zero_seconds(self):
+        from hive_slack.formatting import _format_uptime
+
+        assert _format_uptime(0) == "0s"
+
+    def test_seconds_only(self):
+        from hive_slack.formatting import _format_uptime
+
+        assert _format_uptime(45) == "45s"
+
+    def test_one_minute(self):
+        from hive_slack.formatting import _format_uptime
+
+        assert _format_uptime(60) == "1m"
+
+    def test_hours_and_minutes(self):
+        from hive_slack.formatting import _format_uptime
+
+        assert _format_uptime(5400) == "1h 30m"
+
+    def test_exact_hour(self):
+        from hive_slack.formatting import _format_uptime
+
+        assert _format_uptime(3600) == "1h"
+
+    def test_days_hours_minutes(self):
+        from hive_slack.formatting import _format_uptime
+
+        # 3d 14h 22m = 3*86400 + 14*3600 + 22*60 = 310920
+        assert _format_uptime(310920) == "3d 14h 22m"
+
+    def test_exact_day(self):
+        from hive_slack.formatting import _format_uptime
+
+        assert _format_uptime(86400) == "1d"
+
+
+class TestFormatStatus:
+    """Test status dict -> plain text formatting."""
+
+    def test_active_workers_format(self):
+        """Full status with active workers matches expected output format."""
+        from hive_slack.formatting import _format_status
+
+        status = {
+            "uptime_seconds": 310920,
+            "recipes_available": True,
+            "workers": [
+                {
+                    "task_id": "deck-stain-research",
+                    "tier": "2",
+                    "description": "Research deck stain",
+                    "elapsed_seconds": 252,
+                },
+                {
+                    "task_id": "font-build",
+                    "tier": "3",
+                    "description": "Build fonts",
+                    "elapsed_seconds": 63,
+                },
+            ],
+            "sessions_count": 3,
+            "executing_count": 1,
+            "queued_message_count": 2,
+            "connection": {
+                "status": "healthy",
+                "seconds_since_last_check": 45,
+                "reconnect_count": 0,
+            },
+        }
+        result = _format_status(status)
+
+        assert result.startswith("Status\n")
+        assert "3d 14h 22m" in result
+        assert "Recipes: available" in result
+        assert "healthy" in result
+        assert "45s ago" in result
+        assert "0 reconnects" in result
+        assert "2 active" in result
+        assert "deck-stain-research" in result
+        assert "Tier 2" in result
+        assert "font-build" in result
+        assert "Tier 3" in result
+        assert "3 live" in result
+        assert "1 executing" in result
+        assert "2 messages queued" in result
+
+    def test_quiet_format(self):
+        """Quiet state with no workers shows 'none'."""
+        from hive_slack.formatting import _format_status
+
+        status = {
+            "uptime_seconds": 310920,
+            "recipes_available": True,
+            "workers": [],
+            "sessions_count": 3,
+            "executing_count": 0,
+            "queued_message_count": 0,
+            "connection": {
+                "status": "healthy",
+                "seconds_since_last_check": 45,
+                "reconnect_count": 0,
+            },
+        }
+        result = _format_status(status)
+
+        assert "Workers: none" in result
+        assert "0 executing" in result
+        assert "0 messages queued" in result
+
+    def test_recipes_unavailable(self):
+        """Shows unavailable when recipes failed to load."""
+        from hive_slack.formatting import _format_status
+
+        status = {
+            "uptime_seconds": 100,
+            "recipes_available": False,
+            "workers": [],
+            "sessions_count": 0,
+            "executing_count": 0,
+            "queued_message_count": 0,
+            "connection": {
+                "status": "unknown",
+                "seconds_since_last_check": None,
+                "reconnect_count": 0,
+            },
+        }
+        result = _format_status(status)
+
+        assert "Recipes: unavailable" in result
+
+    def test_connection_unknown(self):
+        """Shows unknown when no connection health data."""
+        from hive_slack.formatting import _format_status
+
+        status = {
+            "uptime_seconds": 100,
+            "recipes_available": True,
+            "workers": [],
+            "sessions_count": 0,
+            "executing_count": 0,
+            "queued_message_count": 0,
+            "connection": {
+                "status": "unknown",
+                "seconds_since_last_check": None,
+                "reconnect_count": 0,
+            },
+        }
+        result = _format_status(status)
+
+        assert "Connection: unknown" in result
+
+    def test_uptime_unknown_when_not_started(self):
+        """Shows unknown uptime when service hasn't started."""
+        from hive_slack.formatting import _format_status
+
+        status = {
+            "uptime_seconds": None,
+            "recipes_available": True,
+            "workers": [],
+            "sessions_count": 0,
+            "executing_count": 0,
+            "queued_message_count": 0,
+            "connection": {
+                "status": "unknown",
+                "seconds_since_last_check": None,
+                "reconnect_count": 0,
+            },
+        }
+        result = _format_status(status)
+
+        assert "Uptime: unknown" in result
+
+    def test_worker_without_tier(self):
+        """Workers with no tier show task_id and elapsed only."""
+        from hive_slack.formatting import _format_status
+
+        status = {
+            "uptime_seconds": 100,
+            "recipes_available": True,
+            "workers": [
+                {
+                    "task_id": "some-task",
+                    "tier": "",
+                    "description": "Do stuff",
+                    "elapsed_seconds": 90,
+                },
+            ],
+            "sessions_count": 0,
+            "executing_count": 0,
+            "queued_message_count": 0,
+            "connection": {
+                "status": "unknown",
+                "seconds_since_last_check": None,
+                "reconnect_count": 0,
+            },
+        }
+        result = _format_status(status)
+
+        assert "some-task" in result
+        assert "Tier" not in result
+        assert "1m 30s" in result
+
+
+class TestStatusCommand:
+    """Test /status slash command handler wiring."""
+
+    @pytest.mark.asyncio
+    async def test_handler_acks_and_responds_ephemeral(self):
+        """Handler acknowledges the command and responds with ephemeral status."""
+        mock_service = AsyncMock()
+        mock_service.get_status = MagicMock(
+            return_value={
+                "uptime_seconds": 100,
+                "recipes_available": True,
+                "workers": [],
+                "sessions_count": 1,
+                "executing_count": 0,
+                "queued_message_count": 0,
+                "connection": {
+                    "status": "unknown",
+                    "seconds_since_last_check": None,
+                    "reconnect_count": 0,
+                },
+            }
+        )
+        config = make_config()
+        connector = SlackConnector(config, mock_service)
+
+        mock_ack = AsyncMock()
+        mock_respond = AsyncMock()
+
+        await connector._handle_status_command(mock_ack, mock_respond, {})
+
+        mock_ack.assert_called_once()
+        mock_respond.assert_called_once()
+        call_kwargs = mock_respond.call_args[1]
+        assert call_kwargs["response_type"] == "ephemeral"
+        assert "Status" in call_kwargs["text"]
+        assert "Uptime" in call_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_handler_passes_queued_message_count(self):
+        """Handler counts total queued messages from all conversations."""
+        mock_service = AsyncMock()
+        mock_service.get_status = MagicMock(
+            return_value={
+                "uptime_seconds": 100,
+                "recipes_available": True,
+                "workers": [],
+                "sessions_count": 0,
+                "executing_count": 0,
+                "queued_message_count": 3,
+                "connection": {
+                    "status": "unknown",
+                    "seconds_since_last_check": None,
+                    "reconnect_count": 0,
+                },
+            }
+        )
+        config = make_config()
+        connector = SlackConnector(config, mock_service)
+        connector._message_queues = {
+            "conv1": ["msg1", "msg2"],
+            "conv2": ["msg3"],
+        }
+
+        await connector._handle_status_command(AsyncMock(), AsyncMock(), {})
+
+        call_kwargs = mock_service.get_status.call_args[1]
+        assert call_kwargs["queued_message_count"] == 3
+
+    @pytest.mark.asyncio
+    async def test_handler_passes_connection_health(self):
+        """Handler reads connection properties and passes them to get_status."""
+        mock_service = AsyncMock()
+        mock_service.get_status = MagicMock(
+            return_value={
+                "uptime_seconds": 100,
+                "recipes_available": True,
+                "workers": [],
+                "sessions_count": 0,
+                "executing_count": 0,
+                "queued_message_count": 0,
+                "connection": {
+                    "status": "healthy",
+                    "seconds_since_last_check": 30,
+                    "reconnect_count": 1,
+                },
+            }
+        )
+        config = make_config()
+        connector = SlackConnector(config, mock_service)
+
+        # Set connection tracking fields
+        connector._connection._started_at = 1000.0
+        connector._connection._last_health_check_at = 2000.0
+        connector._connection._reconnect_count = 1
+
+        await connector._handle_status_command(AsyncMock(), AsyncMock(), {})
+
+        call_kwargs = mock_service.get_status.call_args[1]
+        health = call_kwargs["connection_health"]
+        assert health["started_at"] == 1000.0
+        assert health["last_health_check_at"] == 2000.0
+        assert health["reconnect_count"] == 1

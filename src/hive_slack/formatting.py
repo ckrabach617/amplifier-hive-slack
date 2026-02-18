@@ -332,3 +332,94 @@ def _render_todo_status(
     lines.append(footer)
 
     return "\n".join(lines)
+
+
+def _format_uptime(seconds: float) -> str:
+    """Format seconds into human-readable uptime (e.g., '3d 14h 22m').
+
+    For durations under 60 seconds, shows seconds. For longer durations,
+    shows the largest applicable units (days, hours, minutes) without seconds.
+    """
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+
+    days, remainder = divmod(s, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes = remainder // 60
+
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+
+    return " ".join(parts)
+
+
+def _format_status(status: dict) -> str:
+    """Format a status dict into plain-text output for Slack.
+
+    Expects a dict from InProcessSessionManager.get_status() with keys:
+    uptime_seconds, recipes_available, workers, sessions_count,
+    executing_count, queued_message_count, connection.
+    """
+    lines: list[str] = ["Status"]
+
+    # Uptime
+    uptime = status.get("uptime_seconds")
+    if uptime is not None:
+        lines.append(f"Uptime: {_format_uptime(uptime)}")
+    else:
+        lines.append("Uptime: unknown")
+
+    # Recipes
+    recipes = status.get("recipes_available", True)
+    lines.append(f"Recipes: {'available' if recipes else 'unavailable'}")
+
+    # Connection
+    conn = status.get("connection", {})
+    conn_status = conn.get("status", "unknown")
+    reconnects = conn.get("reconnect_count", 0)
+    ago = conn.get("seconds_since_last_check")
+
+    if conn_status == "healthy" and ago is not None:
+        lines.append(
+            f"Connection: healthy (last check {int(ago)}s ago, {reconnects} reconnects)"
+        )
+    elif conn_status == "starting":
+        lines.append(f"Connection: starting ({reconnects} reconnects)")
+    elif conn_status == "unavailable":
+        lines.append("Connection: unavailable")
+    else:
+        lines.append("Connection: unknown")
+
+    # Workers
+    workers = status.get("workers", [])
+    if workers:
+        lines.append(f"\nWorkers: {len(workers)} active")
+        for w in workers:
+            task_id = w.get("task_id", "unknown")
+            tier = w.get("tier", "")
+            elapsed = w.get("elapsed_seconds", 0)
+            elapsed_str = _format_duration(elapsed)
+            if not elapsed_str:
+                elapsed_str = f"{int(elapsed)}s"
+            if tier:
+                lines.append(f"  - {task_id} (Tier {tier}, {elapsed_str})")
+            else:
+                lines.append(f"  - {task_id} ({elapsed_str})")
+    else:
+        lines.append("\nWorkers: none")
+
+    # Sessions
+    sessions = status.get("sessions_count", 0)
+    executing = status.get("executing_count", 0)
+    queued = status.get("queued_message_count", 0)
+    lines.append(
+        f"\nSessions: {sessions} live, {executing} executing, {queued} messages queued"
+    )
+
+    return "\n".join(lines)

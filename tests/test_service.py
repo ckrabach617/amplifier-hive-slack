@@ -1,6 +1,7 @@
 """Tests for InProcessSessionManager."""
 
 import asyncio
+import json
 import time
 
 import pytest
@@ -155,7 +156,7 @@ class TestInProcessSessionManager:
         manager._prepared = {"foundation": mock_prepared}
 
         # Fire two concurrent executions for the same conversation
-        results = await asyncio.gather(
+        await asyncio.gather(
             manager.execute("alpha", "conv-1", "first"),
             manager.execute("alpha", "conv-1", "second"),
         )
@@ -210,9 +211,6 @@ class TestInProcessSessionManager:
         assert result_b == "beta response"
         # Two separate sessions created (different instance names, same conv_id)
         assert mock_prepared.create_session.call_count == 2
-
-
-import json
 
 
 class TestSessionPersistence:

@@ -29,6 +29,7 @@ from hive_slack.formatting import (
     markdown_to_slack,
     _friendly_tool_name,
     _format_duration,
+    _format_status,
     _render_todo_status,
     _parse_channel_topic,
 )
@@ -47,6 +48,12 @@ class SessionManager(Protocol):
         on_progress: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
         slack_context: dict[str, Any] | None = None,
     ) -> str: ...
+
+    def get_status(
+        self,
+        queued_message_count: int = 0,
+        connection_health: dict[str, Any] | None = None,
+    ) -> dict[str, Any]: ...
 
 
 class SlackConnector:
@@ -100,6 +107,9 @@ class SlackConnector:
         # Requires Slack app scopes: reactions:read, reactions:write
         # Requires event subscription: reaction_added
         self._app.event("reaction_added")(self._handle_reaction)
+
+        # Slash commands
+        self._app.command("/status")(self._handle_status_command)
 
         # Handle Block Kit button clicks (for approval system)
         import re as _re
@@ -370,7 +380,9 @@ class SlackConnector:
                     if duration_str:
                         text += f" · {duration_str}"
                     if queued:
-                        text += f" · {queued} message{'s' if queued != 1 else ''} queued"
+                        text += (
+                            f" · {queued} message{'s' if queued != 1 else ''} queued"
+                        )
 
                 try:
                     logger.debug("Updating status: %s", text[:80])
@@ -1259,6 +1271,31 @@ class SlackConnector:
 
             # Record thread as roundtable-owned
             self._set_thread_owner(conversation_id, "_ROUNDTABLE")
+
+    async def _handle_status_command(self, ack, respond, command) -> None:
+        """Handle /status slash command -- return ephemeral health snapshot."""
+        await ack()
+
+        # Collect connection health from SlackConnection properties
+        conn = self._connection
+        connection_health = {
+            "started_at": conn.started_at,
+            "last_health_check_at": conn.last_health_check_at,
+            "reconnect_count": conn.reconnect_count,
+        }
+
+        # Count total queued messages across all conversations
+        queued = sum(len(q) for q in self._message_queues.values())
+
+        # Collect status from service layer
+        status = self._service.get_status(
+            queued_message_count=queued,
+            connection_health=connection_health,
+        )
+
+        # Format and respond
+        text = _format_status(status)
+        await respond(text=text, response_type="ephemeral")
 
     async def _handle_approval_action(self, ack, body) -> None:
         """Handle Block Kit button clicks for the approval system."""
