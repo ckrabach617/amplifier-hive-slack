@@ -431,3 +431,104 @@ class TestVerifiedWorkerSuccess:
         # Intermediate files cleaned up
         assert not (outbox / "vt-1-research.md").exists()
         assert not (outbox / "vt-1-verification.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# _run_verified_worker -- research failure paths
+# ---------------------------------------------------------------------------
+
+
+class TestVerifiedWorkerResearchFailure:
+    @pytest.mark.asyncio
+    async def test_research_exception_aborts_without_verification(
+        self,
+        tool: DispatchWorkerTool,
+        manager: FakeSessionManager,
+        working_dir: Path,
+    ):
+        await tool._store.add_active("vt-exc", "Research X")
+        tool._worker_counter = 1
+        manager.execute = AsyncMock(side_effect=RuntimeError("LLM crashed"))
+
+        await tool._run_verified_worker("Research X", "vt-exc")
+
+        # No verification attempted
+        assert manager.execute.call_count == 1
+        # Task marked as failed
+        tf = read_tasks(working_dir)
+        active = tf.get_section(SECTION_ACTIVE)
+        assert len(active) == 1
+        assert "failed" in active[0].fields["status"]
+        # Director notified
+        manager.notify.assert_called_once()
+        assert "FAILED" in manager.notify.call_args[0][2]
+
+    @pytest.mark.asyncio
+    async def test_research_timeout_aborts_without_verification(
+        self,
+        tool: DispatchWorkerTool,
+        manager: FakeSessionManager,
+        working_dir: Path,
+        monkeypatch,
+    ):
+        monkeypatch.setattr("hive_slack.dispatch.PHASE_TIMEOUT", 0.01)
+        await tool._store.add_active("vt-rto", "Research X")
+        tool._worker_counter = 1
+
+        async def slow_research(*args, **kwargs):
+            await asyncio.sleep(1000)
+
+        manager.execute = AsyncMock(side_effect=slow_research)
+
+        await tool._run_verified_worker("Research X", "vt-rto")
+
+        assert manager.execute.call_count == 1
+        tf = read_tasks(working_dir)
+        active = tf.get_section(SECTION_ACTIVE)
+        assert "failed" in active[0].fields["status"]
+        assert "timed out" in active[0].fields["status"].lower()
+
+    @pytest.mark.asyncio
+    async def test_research_no_file_aborts_without_verification(
+        self,
+        tool: DispatchWorkerTool,
+        manager: FakeSessionManager,
+        working_dir: Path,
+    ):
+        await tool._store.add_active("vt-nof", "Research X")
+        tool._worker_counter = 1
+        # Session completes but doesn't write the expected file
+        manager.execute = AsyncMock(return_value="Done but forgot the file")
+
+        await tool._run_verified_worker("Research X", "vt-nof")
+
+        assert manager.execute.call_count == 1
+        tf = read_tasks(working_dir)
+        active = tf.get_section(SECTION_ACTIVE)
+        assert "failed" in active[0].fields["status"]
+        assert "structured output" in active[0].fields["status"]
+
+    @pytest.mark.asyncio
+    async def test_research_empty_file_aborts_without_verification(
+        self,
+        tool: DispatchWorkerTool,
+        manager: FakeSessionManager,
+        working_dir: Path,
+    ):
+        outbox = working_dir / ".outbox"
+        outbox.mkdir()
+        await tool._store.add_active("vt-emt", "Research X")
+        tool._worker_counter = 1
+
+        async def write_empty(*args, **kwargs):
+            (outbox / "vt-emt-research.md").write_text("   \n  \n")
+            return "Done"
+
+        manager.execute = AsyncMock(side_effect=write_empty)
+
+        await tool._run_verified_worker("Research X", "vt-emt")
+
+        assert manager.execute.call_count == 1
+        tf = read_tasks(working_dir)
+        active = tf.get_section(SECTION_ACTIVE)
+        assert "failed" in active[0].fields["status"]

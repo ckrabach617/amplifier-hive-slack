@@ -134,20 +134,55 @@ class DispatchWorkerTool:
             # Phase 1: Research
             logger.info("Verified worker Phase 1 (research): %s", task_id)
             research_conv = f"worker:{task_id}:{self._worker_counter}:research"
-            await asyncio.wait_for(
-                self._manager.execute(
+            try:
+                await asyncio.wait_for(
+                    self._manager.execute(
+                        self._instance_name,
+                        research_conv,
+                        self._build_researcher_prompt(task, task_id),
+                    ),
+                    timeout=PHASE_TIMEOUT,
+                )
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                reason = "Research timed out"
+                await self._store.fail_task(task_id, reason)
+                self._manager.notify(
                     self._instance_name,
-                    research_conv,
-                    self._build_researcher_prompt(task, task_id),
-                ),
-                timeout=PHASE_TIMEOUT,
-            )
+                    self._director_conversation_id,
+                    f'[WORKER REPORT] Task "{task_id}" FAILED.\nError: {reason}',
+                )
+                return
+            except Exception as e:
+                reason = f"Research failed: {e}"
+                await self._store.fail_task(task_id, reason)
+                self._manager.notify(
+                    self._instance_name,
+                    self._director_conversation_id,
+                    f'[WORKER REPORT] Task "{task_id}" FAILED.\nError: {reason}',
+                )
+                return
+
+            # Validate research output
+            if not research_file.exists() or not research_file.read_text().strip():
+                reason = (
+                    "Research worker completed but didn't produce structured output."
+                )
+                await self._store.fail_task(task_id, reason)
+                self._manager.notify(
+                    self._instance_name,
+                    self._director_conversation_id,
+                    f'[WORKER REPORT] Task "{task_id}" FAILED.\nError: {reason}',
+                )
+                return
 
             research_content = research_file.read_text()
 
             # Phase 2: Verification
             logger.info("Verified worker Phase 2 (verification): %s", task_id)
             verify_conv = f"worker:{task_id}:{self._worker_counter}:verify"
+
             await asyncio.wait_for(
                 self._manager.execute(
                     self._instance_name,
