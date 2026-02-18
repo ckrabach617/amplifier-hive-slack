@@ -18,6 +18,8 @@ from hive_slack.worker_manager import WorkerManager
 
 logger = logging.getLogger(__name__)
 
+PHASE_TIMEOUT = 600  # seconds per verification phase
+
 
 class DispatchWorkerTool:
     """Dispatch a task to a background worker session.
@@ -121,6 +123,67 @@ class DispatchWorkerTool:
             "- A Summary section\n"
             "- Numbered Claims with the source URL/reference for each claim"
         )
+
+    async def _run_verified_worker(self, task: str, task_id: str) -> None:
+        """Run two-pass verified research: researcher then verifier."""
+        outbox = self._working_dir / ".outbox"
+        research_file = outbox / f"{task_id}-research.md"
+        verification_file = outbox / f"{task_id}-verification.md"
+
+        try:
+            # Phase 1: Research
+            logger.info("Verified worker Phase 1 (research): %s", task_id)
+            research_conv = f"worker:{task_id}:{self._worker_counter}:research"
+            await asyncio.wait_for(
+                self._manager.execute(
+                    self._instance_name,
+                    research_conv,
+                    self._build_researcher_prompt(task, task_id),
+                ),
+                timeout=PHASE_TIMEOUT,
+            )
+
+            research_content = research_file.read_text()
+
+            # Phase 2: Verification
+            logger.info("Verified worker Phase 2 (verification): %s", task_id)
+            verify_conv = f"worker:{task_id}:{self._worker_counter}:verify"
+            await asyncio.wait_for(
+                self._manager.execute(
+                    self._instance_name,
+                    verify_conv,
+                    self._build_verifier_prompt(task_id),
+                ),
+                timeout=PHASE_TIMEOUT,
+            )
+
+            verification_content = verification_file.read_text()
+
+            # Synthesis
+            summary = (
+                f"Verified research complete. "
+                f"Research: {research_content[:200]} "
+                f"Verification: {verification_content[:200]}"
+            )
+            if len(summary) > 500:
+                summary = summary[:500] + "... [truncated]"
+
+            await self._store.complete_task(task_id, summary)
+            logger.info("Verified worker completed: %s", task_id)
+
+            self._manager.notify(
+                self._instance_name,
+                self._director_conversation_id,
+                f'[WORKER REPORT] Task "{task_id}" completed with verification.\n'
+                f"Research:\n{research_content}\n\n"
+                f"Verification:\n{verification_content}",
+            )
+
+        finally:
+            # Cleanup intermediate files
+            for f in (research_file, verification_file):
+                if f.exists():
+                    f.unlink()
 
     async def execute(self, input: dict[str, Any]) -> Any:
         """Dispatch a background worker and return immediately."""

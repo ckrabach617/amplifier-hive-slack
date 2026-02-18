@@ -364,3 +364,70 @@ class TestResearcherPrompt:
         assert "Summary" in prompt
         assert "Claims" in prompt
         assert "source" in prompt.lower()
+
+
+# ---------------------------------------------------------------------------
+# _run_verified_worker -- success path
+# ---------------------------------------------------------------------------
+
+
+class TestVerifiedWorkerSuccess:
+    @pytest.mark.asyncio
+    async def test_happy_path_runs_both_phases(
+        self,
+        tool: DispatchWorkerTool,
+        manager: FakeSessionManager,
+        working_dir: Path,
+    ):
+        outbox = working_dir / ".outbox"
+        outbox.mkdir()
+
+        # Set up preconditions (normally done by execute())
+        await tool._store.add_active("vt-1", "Research topic X")
+        tool._worker_counter = 1
+
+        call_count = 0
+
+        async def mock_sessions(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # Researcher writes structured output
+                (outbox / "vt-1-research.md").write_text(
+                    "## Summary\nKey findings\n\n## Claims\n"
+                    "1. Claim A -- Source: http://a.com"
+                )
+                return "Research done"
+            else:
+                # Verifier writes verification results
+                (outbox / "vt-1-verification.md").write_text(
+                    "## Verification Results\n"
+                    "1. Claim A -- CONFIRMED. Source supports claim.\n\n"
+                    "## Summary\n1 of 1 claims confirmed"
+                )
+                return "Verification done"
+
+        manager.execute = AsyncMock(side_effect=mock_sessions)
+
+        await tool._run_verified_worker("Research topic X", "vt-1")
+
+        # Both sessions were called
+        assert manager.execute.call_count == 2
+
+        # TASKS.md moved to Done
+        tf = read_tasks(working_dir)
+        assert len(tf.get_section(SECTION_ACTIVE)) == 0
+        done = tf.get_section(SECTION_DONE)
+        assert len(done) == 1
+        assert done[0].id == "vt-1"
+
+        # Director was notified with combined report
+        manager.notify.assert_called_once()
+        report = manager.notify.call_args[0][2]
+        assert "[WORKER REPORT]" in report
+        assert "vt-1" in report
+        assert "verification" in report.lower()
+
+        # Intermediate files cleaned up
+        assert not (outbox / "vt-1-research.md").exists()
+        assert not (outbox / "vt-1-verification.md").exists()
