@@ -742,7 +742,9 @@ class InProcessSessionManager:
             # We find it by name, wrap it with AsyncRecipesTool (which
             # dispatches execute/resume to background tasks), and mount
             # the wrapper in its place.  Quick ops pass through.
-            await self._wrap_recipes_tool(session, instance_name, conversation_id)
+            await self._wrap_recipes_tool(
+                session, instance_name, conversation_id, slack_context
+            )
 
             self._sessions[session_key] = session
         return self._sessions[session_key]
@@ -752,6 +754,7 @@ class InProcessSessionManager:
         session: object,
         instance_name: str,
         conversation_id: str,
+        slack_context: dict[str, Any] | None = None,
     ) -> None:
         """Replace the recipes tool with a non-blocking wrapper.
 
@@ -759,6 +762,10 @@ class InProcessSessionManager:
         AsyncRecipesTool (background dispatch for execute/resume), and
         mounts the wrapper under the same name so the LLM sees no
         difference.  Quick operations pass through synchronously.
+
+        When *slack_context* is provided, recipe completion/failure
+        notifications are posted directly to Slack instead of being
+        queued for the next user message (which may never come).
 
         No-op if the recipes tool was not loaded (e.g. recipes_available=False).
         """
@@ -776,13 +783,41 @@ class InProcessSessionManager:
 
         from hive_slack.async_recipes import AsyncRecipesTool
 
-        def _notify(message: str) -> None:
+        # Build the notification callback.  When slack_context is
+        # available we post directly to the channel so the user sees
+        # recipe results immediately (even if they never send another
+        # message).  Falls back to the queue for non-Slack sessions.
+        slack_post_fn: Callable[[str], Awaitable[None]] | None = None
+        if slack_context:
+            client = slack_context.get("client")
+            channel = slack_context.get("channel", "")
+            thread_ts = slack_context.get("thread_ts", "")
+            if client and channel:
+
+                async def _slack_post(message: str) -> None:
+                    try:
+                        await client.chat_postMessage(
+                            channel=channel,
+                            text=message,
+                            thread_ts=thread_ts or None,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Direct Slack post failed, falling back to queue",
+                            exc_info=True,
+                        )
+                        self.notify(instance_name, conversation_id, message)
+
+                slack_post_fn = _slack_post
+
+        def _notify_queue(message: str) -> None:
             self.notify(instance_name, conversation_id, message)
 
         wrapper = AsyncRecipesTool(
             wrapped_tool=original,
             worker_manager=self._worker_manager,
-            notify_fn=_notify,
+            notify_fn=_notify_queue,
+            slack_post_fn=slack_post_fn,
         )
 
         try:

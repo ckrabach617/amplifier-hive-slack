@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from hive_slack.worker_manager import WorkerManager
 
@@ -37,10 +37,12 @@ class AsyncRecipesTool:
         wrapped_tool: Any,
         worker_manager: WorkerManager,
         notify_fn: Callable[[str], None],
+        slack_post_fn: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self._wrapped = wrapped_tool
         self._workers = worker_manager
-        self._notify = notify_fn
+        self._notify_queue = notify_fn
+        self._slack_post_fn = slack_post_fn
         self._counter = 0
 
     # -- Tool protocol ---------------------------------------------------------
@@ -56,6 +58,25 @@ class AsyncRecipesTool:
     @property
     def input_schema(self) -> dict:
         return getattr(self._wrapped, "input_schema", {})
+
+    # -- Helpers ---------------------------------------------------------------
+
+    async def _post(self, message: str) -> None:
+        """Post a notification directly to Slack, falling back to queue.
+
+        When a ``slack_post_fn`` was provided (i.e. we have Slack
+        context), the message is posted to the channel immediately so
+        the user doesn't have to send another message to see it.
+        Otherwise we fall back to the queue which drains on next
+        ``execute()`` call.
+        """
+        if self._slack_post_fn is not None:
+            try:
+                await self._slack_post_fn(message)
+                return
+            except Exception:
+                logger.warning("Direct Slack post failed, falling back to queue")
+        self._notify_queue(message)
 
     # -- Execution -------------------------------------------------------------
 
@@ -85,12 +106,12 @@ class AsyncRecipesTool:
                 # Truncate for the notification (full output in recipe session)
                 if len(output) > 500:
                     output = output[:500] + "... [truncated]"
-                self._notify(f"[RECIPE COMPLETE] {label}\n{output}")
+                await self._post(f"[RECIPE COMPLETE] {label}\n{output}")
             except asyncio.CancelledError:
-                self._notify(f"[RECIPE CANCELLED] {label}")
+                await self._post(f"[RECIPE CANCELLED] {label}")
             except Exception as e:
                 logger.exception("Background recipe failed: %s", task_id)
-                self._notify(f"[RECIPE FAILED] {label}\nError: {e}")
+                await self._post(f"[RECIPE FAILED] {label}\nError: {e}")
 
         task = asyncio.create_task(_run(), name=task_id)
         self._workers.register(task_id, task, description=f"Recipe: {label}", tier="3")
