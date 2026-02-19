@@ -24,6 +24,7 @@ from amplifier_module_loop_interactive import InteractiveOrchestrator
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 class FakeProvider:
     """Minimal provider stub without a ``stream`` attribute.
 
@@ -38,9 +39,7 @@ class FakeProvider:
         self.priority = 0
         self.complete = AsyncMock()
         self.parse_tool_calls = MagicMock(return_value=[])
-        self.get_info = MagicMock(
-            return_value=MagicMock(context_window=100_000)
-        )
+        self.get_info = MagicMock(return_value=MagicMock(context_window=100_000))
 
 
 def _make_orchestrator(**overrides) -> InteractiveOrchestrator:
@@ -65,6 +64,7 @@ def _providers(provider: FakeProvider) -> dict:
 # ---------------------------------------------------------------------------
 # TestTextResponse -- happy-path text-only completions
 # ---------------------------------------------------------------------------
+
 
 class TestTextResponse:
     """Provider returns text, no tool calls."""
@@ -117,6 +117,7 @@ class TestTextResponse:
 # ---------------------------------------------------------------------------
 # TestToolExecution -- tool call loop
 # ---------------------------------------------------------------------------
+
 
 class TestToolExecution:
     """Provider returns tool calls, orchestrator executes them, then gets text."""
@@ -198,6 +199,7 @@ class TestToolExecution:
 # TestInjectionQueue -- mid-execution message injection
 # ---------------------------------------------------------------------------
 
+
 class TestInjectionQueue:
     """inject_message() pushes to the queue; drain points pick them up."""
 
@@ -229,7 +231,8 @@ class TestInjectionQueue:
         # The injected message should appear in context as a user message
         messages = await ctx.get_messages_for_request()
         injected = [
-            m for m in messages
+            m
+            for m in messages
             if m.get("role") == "user" and "urgent follow-up" in m.get("content", "")
         ]
         assert len(injected) == 1
@@ -289,7 +292,8 @@ class TestInjectionQueue:
 
         messages = await ctx.get_messages_for_request()
         injected = [
-            m for m in messages
+            m
+            for m in messages
             if m.get("role") == "user" and "additional messages" in m.get("content", "")
         ]
         assert len(injected) == 1
@@ -338,8 +342,10 @@ class TestInjectionQueue:
         # Verify the injected message ended up in context
         messages = await ctx.get_messages_for_request()
         injected = [
-            m for m in messages
-            if m.get("role") == "user" and "sent during tool run" in m.get("content", "")
+            m
+            for m in messages
+            if m.get("role") == "user"
+            and "sent during tool run" in m.get("content", "")
         ]
         assert len(injected) == 1
 
@@ -347,6 +353,7 @@ class TestInjectionQueue:
 # ---------------------------------------------------------------------------
 # TestForceRespond -- dispatch_worker tool stripping
 # ---------------------------------------------------------------------------
+
 
 class TestForceRespond:
     """After dispatch_worker runs, tools are stripped for the next LLM call."""
@@ -358,9 +365,7 @@ class TestForceRespond:
         tc = ToolCall(id="tc_1", name="dispatch_worker", arguments={"task": "x"})
         provider = _make_provider(
             responses=[
-                ChatResponse(
-                    content=[TextBlock(text="Dispatching")], tool_calls=[tc]
-                ),
+                ChatResponse(content=[TextBlock(text="Dispatching")], tool_calls=[tc]),
                 ChatResponse(content=[TextBlock(text="Worker dispatched")]),
             ],
             tool_calls_seq=[[tc], []],
@@ -386,9 +391,7 @@ class TestForceRespond:
         provider = _make_provider(
             responses=[
                 # 1st: dispatch_worker tool call
-                ChatResponse(
-                    content=[TextBlock(text="")], tool_calls=[tc_dispatch]
-                ),
+                ChatResponse(content=[TextBlock(text="")], tool_calls=[tc_dispatch]),
                 # 2nd: force-respond (no tools) -> LLM produces text, loop breaks
                 ChatResponse(content=[TextBlock(text="Acknowledged")]),
             ],
@@ -410,10 +413,47 @@ class TestForceRespond:
         second_request = provider.complete.call_args_list[1][0][0]
         assert second_request.tools is None
 
+    @pytest.mark.asyncio
+    async def test_force_respond_tools_configurable(self):
+        """force_respond_tools config adds custom tools to the set."""
+        tc = ToolCall(id="tc_1", name="recipes", arguments={})
+        provider = _make_provider(
+            responses=[
+                ChatResponse(content=[TextBlock(text="")], tool_calls=[tc]),
+                ChatResponse(content=[TextBlock(text="Recipe started")]),
+            ],
+            tool_calls_seq=[[tc], []],
+        )
+        tools = {"recipes": MockTool("recipes", "ok")}
+        orch = _make_orchestrator(force_respond_tools=["dispatch_worker", "recipes"])
+
+        result = await orch.execute(
+            "Go", MockContextManager(), _providers(provider), tools, HookRegistry()
+        )
+        assert result == "Recipe started"
+
+        # 2nd call should have tools stripped (force-respond triggered by "recipes")
+        second_request = provider.complete.call_args_list[1][0][0]
+        assert second_request.tools is None
+
+    @pytest.mark.asyncio
+    async def test_force_respond_default_includes_dispatch_worker(self):
+        """Without config, dispatch_worker is still in force_respond_tools."""
+        orch = _make_orchestrator()
+        assert "dispatch_worker" in orch._force_respond_tools
+
+    @pytest.mark.asyncio
+    async def test_force_respond_config_overrides_default(self):
+        """Config completely replaces the default set."""
+        orch = _make_orchestrator(force_respond_tools=["my_tool"])
+        assert "my_tool" in orch._force_respond_tools
+        assert "dispatch_worker" not in orch._force_respond_tools
+
 
 # ---------------------------------------------------------------------------
 # TestExtendedThinking -- thinking blocks and empty text filtering
 # ---------------------------------------------------------------------------
+
 
 class TestExtendedThinking:
     """Extended thinking: kwargs, ThinkingBlock preservation, empty-text filter."""
@@ -498,6 +538,7 @@ class TestExtendedThinking:
 # TestErrorHandling -- provider errors and max iterations
 # ---------------------------------------------------------------------------
 
+
 class TestErrorHandling:
     """Error paths: no providers, exceptions, empty-message errors, max iters."""
 
@@ -505,9 +546,7 @@ class TestErrorHandling:
     async def test_no_providers_returns_error(self):
         """Empty providers dict yields an error message."""
         orch = _make_orchestrator()
-        result = await orch.execute(
-            "Hi", MockContextManager(), {}, {}, HookRegistry()
-        )
+        result = await orch.execute("Hi", MockContextManager(), {}, {}, HookRegistry())
         assert "Error: No providers available" in result
 
     @pytest.mark.asyncio
@@ -557,7 +596,11 @@ class TestErrorHandling:
         orch = _make_orchestrator(max_iterations=1)
 
         await orch.execute(
-            "Do stuff", MockContextManager(), _providers(provider), tools, HookRegistry()
+            "Do stuff",
+            MockContextManager(),
+            _providers(provider),
+            tools,
+            HookRegistry(),
         )
 
         # Verify two calls were made to provider.complete
@@ -565,7 +608,8 @@ class TestErrorHandling:
         # The second call should contain the system reminder
         second_call_request = provider.complete.call_args_list[1][0][0]
         reminder_messages = [
-            m for m in second_call_request.messages
+            m
+            for m in second_call_request.messages
             if isinstance(m.content, str) and "system-reminder" in m.content
         ]
         assert len(reminder_messages) == 1
@@ -576,6 +620,7 @@ class TestErrorHandling:
 # TestCancellation -- graceful cancellation via coordinator
 # ---------------------------------------------------------------------------
 
+
 class TestCancellation:
     """Coordinator-driven cancellation at different points in the loop."""
 
@@ -585,9 +630,7 @@ class TestCancellation:
         coord.cancellation.is_immediate = False
         coord.cancellation.register_tool_start = MagicMock()
         coord.cancellation.register_tool_complete = MagicMock()
-        coord.process_hook_result = AsyncMock(
-            return_value=MagicMock(action="continue")
-        )
+        coord.process_hook_result = AsyncMock(return_value=MagicMock(action="continue"))
         return coord
 
     @pytest.mark.asyncio
@@ -601,7 +644,11 @@ class TestCancellation:
         orch = _make_orchestrator()
 
         result = await orch.execute(
-            "Hi", MockContextManager(), _providers(provider), {}, HookRegistry(),
+            "Hi",
+            MockContextManager(),
+            _providers(provider),
+            {},
+            HookRegistry(),
             coordinator=coord,
         )
         # Provider should never be called -- cancelled at iteration start
@@ -637,7 +684,11 @@ class TestCancellation:
         orch = _make_orchestrator()
 
         await orch.execute(
-            "Go", ctx, _providers(provider), tools, HookRegistry(),
+            "Go",
+            ctx,
+            _providers(provider),
+            tools,
+            HookRegistry(),
             coordinator=coord,
         )
 
@@ -666,7 +717,11 @@ class TestCancellation:
         orch = _make_orchestrator()
 
         await orch.execute(
-            "Hi", MockContextManager(), _providers(provider), {}, hooks,
+            "Hi",
+            MockContextManager(),
+            _providers(provider),
+            {},
+            hooks,
             coordinator=coord,
         )
         complete_events = [
@@ -680,6 +735,7 @@ class TestCancellation:
 # TestConstructor -- config defaults
 # ---------------------------------------------------------------------------
 
+
 class TestConstructor:
     """Constructor parses config with correct defaults."""
 
@@ -691,12 +747,14 @@ class TestConstructor:
         assert orch.min_delay_between_calls_ms == 0
 
     def test_custom_config(self):
-        orch = InteractiveOrchestrator({
-            "max_iterations": 5,
-            "stream_delay": 0.05,
-            "extended_thinking": True,
-            "min_delay_between_calls_ms": 200,
-        })
+        orch = InteractiveOrchestrator(
+            {
+                "max_iterations": 5,
+                "stream_delay": 0.05,
+                "extended_thinking": True,
+                "min_delay_between_calls_ms": 200,
+            }
+        )
         assert orch.max_iterations == 5
         assert orch.stream_delay == 0.05
         assert orch.extended_thinking is True

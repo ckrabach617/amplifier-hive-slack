@@ -94,7 +94,13 @@ class InProcessSessionManager:
                     "orchestrator": {
                         "module": "loop-interactive",
                         "source": _LOOP_INTERACTIVE_SOURCE,
-                        "config": {"extended_thinking": True},
+                        "config": {
+                            "extended_thinking": True,
+                            "force_respond_tools": [
+                                "dispatch_worker",
+                                "recipes",
+                            ],
+                        },
                     },
                 },
             )

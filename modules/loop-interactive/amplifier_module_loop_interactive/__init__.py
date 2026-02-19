@@ -76,6 +76,10 @@ class InteractiveOrchestrator:
         self._pending_ephemeral_injections: list[dict[str, Any]] = []
         # Injection queue for mid-execution user messages
         self._injection_queue: asyncio.Queue[str] = asyncio.Queue()
+        # Tools that trigger force-respond (strip tools on next LLM call)
+        self._force_respond_tools: set[str] = set(
+            config.get("force_respond_tools", ["dispatch_worker"])
+        )
         # Progress callback (set per-execution, not persistent)
         self._on_progress: Any | None = None
 
@@ -801,8 +805,9 @@ class InteractiveOrchestrator:
                         )
 
                     # Check if any tool requests force-respond (strip tools next call)
-                    _FORCE_RESPOND_TOOLS = {"dispatch_worker"}
-                    if any(tn in _FORCE_RESPOND_TOOLS for _, tn, _ in tool_results):
+                    if any(
+                        tn in self._force_respond_tools for _, tn, _ in tool_results
+                    ):
                         _force_respond = True
                         logger.info(
                             "Force-respond: tools will be stripped for next LLM call"
