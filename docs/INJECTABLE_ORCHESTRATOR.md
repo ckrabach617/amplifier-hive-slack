@@ -386,6 +386,66 @@ Wire the connector to use injection instead of local queuing:
 | New module vs modify | New module (`loop-interactive`) | Doesn't break existing |
 | Progress mechanism | Callback on execute() | Simple, optional, backward compatible |
 
+## Force-Respond Mechanism
+
+Some tools (like `dispatch_worker`) need the Director to respond to the user
+immediately after the tool runs, rather than continuing to call more tools.
+Prompt instructions ("respond after dispatching") are unreliable -- the LLM
+ignores them. Force-respond solves this mechanically.
+
+### How It Works
+
+After tool results are processed, the orchestrator checks if any executed tool
+is in the `force_respond_tools` set. If so, it sets a one-shot flag. On the
+next iteration, `tools_list` is set to `None` -- the LLM literally has no
+tools available, so it MUST produce text.
+
+```python
+# In the loop body, after tool results are added to context:
+if any(tn in self._force_respond_tools for _, tn, _ in tool_results):
+    _force_respond = True
+
+# On the next iteration, when building ChatRequest:
+if _force_respond:
+    _force_respond = False  # one-shot reset
+    tools_list = None  # LLM must respond with text
+```
+
+### Configuration
+
+`force_respond_tools` is configurable via the orchestrator config dict,
+defaulting to `["dispatch_worker"]`:
+
+```python
+# In InteractiveOrchestrator.__init__:
+self._force_respond_tools: set[str] = set(
+    config.get("force_respond_tools", ["dispatch_worker"])
+)
+
+# In service.py orchestrator overlay:
+"config": {
+    "extended_thinking": True,
+    "force_respond_tools": ["dispatch_worker", "recipes"],
+}
+```
+
+Adding a new force-respond tool is a one-line config change in `service.py`.
+
+### Interaction with Injection Queue
+
+Worker completion reports use `notify()` (queued for next `execute()` call),
+NOT `inject_message()` (mid-execution). This is deliberate -- injecting worker
+reports mid-execution can hijack the force-respond cycle (triggering injection
+point 2 after a force-respond, causing the Director to loop instead of posting
+its response). See `service.py:528-542` for the documented rationale.
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Force mechanism | Strip tools from LLM call | Mechanical enforcement, not prompt-dependent |
+| Scope | One-shot (resets after one call) | Tools available again if loop continues |
+| Configuration | `force_respond_tools` in config dict | Adding tools doesn't require orchestrator edits |
+| Worker reports | `notify()` not `inject_message()` | Prevents force-respond cycle hijacking |
+
 ## SessionManager Protocol Change
 
 ```python

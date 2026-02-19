@@ -62,7 +62,7 @@ class SessionManager(Protocol):
         content: str,
     ) -> bool: ...
 
-    async def resolve_approval(
+    def resolve_approval(
         self,
         action_id: str,
         value: str,
