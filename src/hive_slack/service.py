@@ -101,6 +101,36 @@ class InProcessSessionManager:
             bundle = bundle.compose(orchestrator_overlay)
             logger.info("Using loop-interactive orchestrator (injection support)")
 
+            # Compose agents behavior for agent delegation (required by recipes)
+            try:
+                agents_behavior = await load_bundle(
+                    "git+https://github.com/microsoft/amplifier-foundation@main"
+                    "#subdirectory=behaviors/agents.yaml"
+                )
+                bundle = bundle.compose(agents_behavior)
+                logger.info("Composed agents behavior (delegate tool)")
+            except Exception:
+                logger.warning(
+                    "Could not load agents behavior. "
+                    "Agent delegation will not be available.",
+                    exc_info=True,
+                )
+
+            # Compose superpowers bundle for Tier 3 recipe agents
+            # (brainstormer, implementer, spec-reviewer, etc.)
+            try:
+                superpowers_bundle = await load_bundle(
+                    "git+https://github.com/microsoft/amplifier-bundle-superpowers@main"
+                )
+                bundle = bundle.compose(superpowers_bundle)
+                logger.info("Composed superpowers bundle (recipe agents)")
+            except Exception:
+                logger.warning(
+                    "Could not load superpowers bundle. "
+                    "Superpowers recipe agents will not be available.",
+                    exc_info=True,
+                )
+
             # Compose recipes behavior for Tier 3 staged approval workflows
             try:
                 recipes_behavior = await load_bundle(
@@ -562,6 +592,86 @@ class InProcessSessionManager:
                 approval_system=approval_system,
                 display_system=display_system,
             )
+
+            # Register session.spawn capability for agent delegation & recipes
+            async def spawn_capability(
+                agent_name: str,
+                instruction: str,
+                parent_session: object,
+                agent_configs: dict[str, dict[str, Any]],
+                sub_session_id: str | None = None,
+                orchestrator_config: dict[str, Any] | None = None,
+                parent_messages: list[dict[str, Any]] | None = None,
+                provider_preferences: list[Any] | None = None,
+                self_delegation_depth: int = 0,
+                **kwargs: Any,
+            ) -> dict[str, Any]:
+                """Spawn a sub-session for agent delegation."""
+                from amplifier_foundation import Bundle, load_bundle
+
+                def _bundle_from_config(name: str, config: dict) -> Bundle:
+                    return Bundle(
+                        name=name,
+                        version="1.0.0",
+                        session=config.get("session", {}),
+                        providers=config.get("providers", []),
+                        tools=config.get("tools", []),
+                        hooks=config.get("hooks", []),
+                        instruction=config.get("instruction")
+                        or config.get("system", {}).get("instruction"),
+                    )
+
+                child_bundle: Bundle | None = None
+
+                # 1. Check caller-provided agent configs
+                if agent_name in agent_configs:
+                    child_bundle = _bundle_from_config(
+                        agent_name, agent_configs[agent_name]
+                    )
+
+                # 2. Check prepared bundle's agent registry
+                elif hasattr(prepared, "bundle") and agent_name in getattr(
+                    prepared.bundle, "agents", {}
+                ):
+                    child_bundle = _bundle_from_config(
+                        agent_name, prepared.bundle.agents[agent_name]
+                    )
+
+                # 3. Dynamic resolution -- load from cached bundles
+                #    Handles "namespace:agent" refs (e.g. superpowers:brainstormer)
+                if child_bundle is None:
+                    try:
+                        child_bundle = await load_bundle(agent_name)
+                        logger.info(
+                            "Dynamically loaded agent bundle '%s'",
+                            agent_name,
+                        )
+                    except Exception:
+                        available = list(agent_configs.keys()) + list(
+                            getattr(
+                                getattr(prepared, "bundle", None),
+                                "agents",
+                                {},
+                            ).keys()
+                        )
+                        raise ValueError(
+                            f"Agent '{agent_name}' not found locally "
+                            f"or via dynamic bundle loading. "
+                            f"Local agents: {available}"
+                        )
+
+                return await prepared.spawn(
+                    child_bundle=child_bundle,
+                    instruction=instruction,
+                    session_id=sub_session_id,
+                    parent_session=parent_session,
+                    orchestrator_config=orchestrator_config,
+                    parent_messages=parent_messages,
+                    provider_preferences=provider_preferences,
+                    self_delegation_depth=self_delegation_depth,
+                )
+
+            session.coordinator.register_capability("session.spawn", spawn_capability)
 
             # Mount Slack tools post-creation
             if slack_context:
