@@ -599,6 +599,31 @@ class InProcessSessionManager:
                 display_system=display_system,
             )
 
+            # WORKAROUND: PreparedBundle.create_session() ignores the
+            # orchestrator override from Bundle.compose() -- it always
+            # loads the foundation bundle's default (loop-streaming).
+            # Mount the vendored loop-interactive orchestrator directly.
+            try:
+                from amplifier_module_loop_interactive import mount as _mount_orch
+
+                await _mount_orch(
+                    session.coordinator,
+                    config={
+                        "extended_thinking": True,
+                        "force_respond_tools": [
+                            "dispatch_worker",
+                            "recipes",
+                        ],
+                    },
+                )
+                logger.info("Mounted vendored loop-interactive orchestrator (direct)")
+            except Exception:
+                logger.warning(
+                    "Could not mount vendored loop-interactive orchestrator. "
+                    "Force-respond and injection will NOT work.",
+                    exc_info=True,
+                )
+
             # Register session.spawn capability for agent delegation & recipes
             async def spawn_capability(
                 agent_name: str,
