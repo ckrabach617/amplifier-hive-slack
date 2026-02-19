@@ -55,6 +55,19 @@ class SessionManager(Protocol):
         connection_health: dict[str, Any] | None = None,
     ) -> dict[str, Any]: ...
 
+    def inject_message(
+        self,
+        instance_name: str,
+        conversation_id: str,
+        content: str,
+    ) -> bool: ...
+
+    async def resolve_approval(
+        self,
+        action_id: str,
+        value: str,
+    ) -> bool: ...
+
 
 class SlackConnector:
     """Slack Socket Mode listener + response poster.
@@ -138,6 +151,58 @@ class SlackConnector:
         if text:
             parts.append(text)
         return "\n".join(parts)
+
+    async def _handle_busy_conversation(
+        self,
+        conversation_id: str,
+        instance_name: str,
+        prompt: str,
+        channel: str,
+        event_ts: str,
+    ) -> bool:
+        """Handle a message that arrived while the conversation is executing.
+
+        Tries orchestrator injection first, falls back to local queue.
+        Acknowledges with envelope reaction either way.
+
+        Returns True if the conversation was busy and the message was handled.
+        """
+        if conversation_id not in self._active_executions:
+            return False
+
+        exec_info = self._active_executions[conversation_id]
+        injected = self._service.inject_message(
+            exec_info.get("instance_name", instance_name),
+            conversation_id,
+            prompt,
+        )
+
+        if not injected:
+            # Fallback: queue locally for batch after execution
+            queue = self._message_queues.setdefault(conversation_id, [])
+            if len(queue) < 20:  # Cap per-conversation queue depth
+                queue.append(prompt)
+            else:
+                logger.warning(
+                    "Message queue full for %s (cap=20), dropping message",
+                    conversation_id,
+                )
+
+        # Acknowledge with envelope reaction either way
+        try:
+            await self._app.client.reactions_add(
+                channel=channel,
+                timestamp=event_ts,
+                name="incoming_envelope",
+            )
+        except Exception:
+            pass
+        logger.info(
+            "%s message for busy conversation %s",
+            "Injected" if injected else "Queued",
+            conversation_id,
+        )
+        return True
 
     async def _send_welcome_dm(self, user_id: str, persona) -> None:
         """Send one-time welcome DM to a first-time user."""
@@ -589,45 +654,10 @@ class SlackConnector:
             prompt[:100],
         )
 
-        # Check if this conversation is already executing
-        if conversation_id in self._active_executions:
-            # Try to inject into the running orchestrator (mid-execution steering)
-            exec_info = self._active_executions[conversation_id]
-            injected = (
-                self._service.inject_message(
-                    exec_info.get("instance_name", instance_name),
-                    conversation_id,
-                    prompt,
-                )
-                if hasattr(self._service, "inject_message")
-                else False
-            )
-
-            if not injected:
-                # Fallback: queue locally for batch after execution
-                queue = self._message_queues.setdefault(conversation_id, [])
-                if len(queue) < 20:  # Cap per-conversation queue depth
-                    queue.append(prompt)
-                else:
-                    logger.warning(
-                        "Message queue full for %s (cap=20), dropping message",
-                        conversation_id,
-                    )
-
-            # Acknowledge with 📨 either way
-            try:
-                await self._app.client.reactions_add(
-                    channel=channel,
-                    timestamp=event.get("ts", ""),
-                    name="incoming_envelope",
-                )
-            except Exception:
-                pass
-            logger.info(
-                "%s message for busy conversation %s",
-                "Injected" if injected else "Queued",
-                conversation_id,
-            )
+        # If this conversation is busy, inject/queue and return
+        if await self._handle_busy_conversation(
+            conversation_id, instance_name, prompt, channel, event.get("ts", "")
+        ):
             return
 
         await self._execute_with_progress(
@@ -929,45 +959,10 @@ class SlackConnector:
             prompt[:100],
         )
 
-        # Check if this conversation is already executing
-        if conversation_id in self._active_executions:
-            # Try to inject into the running orchestrator (mid-execution steering)
-            exec_info = self._active_executions[conversation_id]
-            injected = (
-                self._service.inject_message(
-                    exec_info.get("instance_name", instance_name),
-                    conversation_id,
-                    prompt,
-                )
-                if hasattr(self._service, "inject_message")
-                else False
-            )
-
-            if not injected:
-                # Fallback: queue locally for batch after execution
-                queue = self._message_queues.setdefault(conversation_id, [])
-                if len(queue) < 20:  # Cap per-conversation queue depth
-                    queue.append(prompt)
-                else:
-                    logger.warning(
-                        "Message queue full for %s (cap=20), dropping message",
-                        conversation_id,
-                    )
-
-            # Acknowledge with 📨 either way
-            try:
-                await self._app.client.reactions_add(
-                    channel=channel,
-                    timestamp=event.get("ts", ""),
-                    name="incoming_envelope",
-                )
-            except Exception:
-                pass
-            logger.info(
-                "%s message for busy conversation %s",
-                "Injected" if injected else "Queued",
-                conversation_id,
-            )
+        # If this conversation is busy, inject/queue and return
+        if await self._handle_busy_conversation(
+            conversation_id, instance_name, prompt, channel, event.get("ts", "")
+        ):
             return
 
         await self._execute_with_progress(
@@ -1312,9 +1307,8 @@ class SlackConnector:
         logger.info("Approval action: %s → %s", action_id, value)
 
         # Resolve via the session manager's public interface
-        if hasattr(self._service, "resolve_approval"):
-            if self._service.resolve_approval(action_id, value):
-                return
+        if self._service.resolve_approval(action_id, value):
+            return
 
         logger.debug("No pending approval matched action %s", action_id)
 
