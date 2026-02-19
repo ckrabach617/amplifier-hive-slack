@@ -712,8 +712,59 @@ class InProcessSessionManager:
                             exc_info=True,
                         )
 
+            # Wrap the recipes tool for non-blocking execution.
+            # The bundle composes the real recipes tool during prepare().
+            # We find it by name, wrap it with AsyncRecipesTool (which
+            # dispatches execute/resume to background tasks), and mount
+            # the wrapper in its place.  Quick ops pass through.
+            await self._wrap_recipes_tool(session, instance_name, conversation_id)
+
             self._sessions[session_key] = session
         return self._sessions[session_key]
+
+    async def _wrap_recipes_tool(
+        self,
+        session: object,
+        instance_name: str,
+        conversation_id: str,
+    ) -> None:
+        """Replace the recipes tool with a non-blocking wrapper.
+
+        Finds the real recipes tool on the coordinator, wraps it with
+        AsyncRecipesTool (background dispatch for execute/resume), and
+        mounts the wrapper under the same name so the LLM sees no
+        difference.  Quick operations pass through synchronously.
+
+        No-op if the recipes tool was not loaded (e.g. recipes_available=False).
+        """
+        coordinator = getattr(session, "coordinator", None)
+        if coordinator is None or not hasattr(coordinator, "get"):
+            return
+
+        tools_registry = coordinator.get("tools")
+        if not isinstance(tools_registry, dict):
+            return
+
+        original = tools_registry.get("recipes")
+        if original is None:
+            return
+
+        from hive_slack.async_recipes import AsyncRecipesTool
+
+        def _notify(message: str) -> None:
+            self.notify(instance_name, conversation_id, message)
+
+        wrapper = AsyncRecipesTool(
+            wrapped_tool=original,
+            worker_manager=self._worker_manager,
+            notify_fn=_notify,
+        )
+
+        try:
+            await coordinator.mount("tools", wrapper)
+            logger.info("Wrapped recipes tool with AsyncRecipesTool (non-blocking)")
+        except Exception:
+            logger.warning("Could not mount AsyncRecipesTool wrapper", exc_info=True)
 
     async def _save_transcript(
         self,
