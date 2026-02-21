@@ -102,11 +102,33 @@ class AsyncRecipesTool:
         async def _run() -> None:
             try:
                 result = await self._wrapped.execute(input)
-                output = getattr(result, "output", None) or str(result)
-                # Truncate for the notification (full output in recipe session)
-                if len(output) > 500:
-                    output = output[:500] + "... [truncated]"
-                await self._post(f"[RECIPE COMPLETE] {label}\n{output}")
+                output_raw = getattr(result, "output", None)
+
+                # Detect approval gate pause vs true completion
+                if (
+                    isinstance(output_raw, dict)
+                    and output_raw.get("status") == "paused_for_approval"
+                ):
+                    sid = output_raw.get("session_id", "")
+                    stage = output_raw.get("stage_name", "unknown")
+                    prompt = output_raw.get("approval_prompt", "")
+                    msg = (
+                        f"[AWAITING APPROVAL] {label}\n"
+                        f"Stage '{stage}' is complete and waiting for your approval.\n"
+                    )
+                    if prompt:
+                        msg += f"{prompt}\n"
+                    msg += (
+                        f"\nTell me to approve or deny this recipe "
+                        f"(session: {sid}, stage: {stage})."
+                    )
+                    await self._post(msg)
+                else:
+                    output = str(output_raw) if output_raw is not None else str(result)
+                    # Truncate for the notification (full output in recipe session)
+                    if len(output) > 500:
+                        output = output[:500] + "... [truncated]"
+                    await self._post(f"[RECIPE COMPLETE] {label}\n{output}")
             except asyncio.CancelledError:
                 await self._post(f"[RECIPE CANCELLED] {label}")
             except Exception as e:

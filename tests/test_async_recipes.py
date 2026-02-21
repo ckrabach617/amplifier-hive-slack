@@ -23,7 +23,7 @@ class FakeToolResult:
     """Minimal stand-in for amplifier_core.models.ToolResult."""
 
     success: bool = True
-    output: str = ""
+    output: str | dict[str, Any] = ""
 
 
 class FakeRecipesTool:
@@ -315,6 +315,38 @@ class TestBackgroundLifecycle:
         notify.assert_called_once()
         msg = notify.call_args[0][0]
         assert "[RECIPE CANCELLED]" in msg
+
+    @pytest.mark.asyncio
+    async def test_notifies_awaiting_approval(
+        self,
+        worker_manager: WorkerManager,
+        notify: MagicMock,
+    ):
+        approval_result = FakeToolResult(
+            success=True,
+            output={
+                "status": "paused_for_approval",
+                "session_id": "sess-123",
+                "stage_name": "discovery-and-design",
+                "approval_prompt": "Review the design before proceeding.",
+            },
+        )
+        pausing = FakeRecipesTool(result=approval_result)
+        wrapper = AsyncRecipesTool(
+            wrapped_tool=pausing,
+            worker_manager=worker_manager,
+            notify_fn=notify,
+        )
+        await wrapper.execute({"operation": "execute", "recipe_path": "staged.yaml"})
+        await asyncio.sleep(0.1)
+
+        notify.assert_called_once()
+        msg = notify.call_args[0][0]
+        assert "[AWAITING APPROVAL]" in msg
+        assert "discovery-and-design" in msg
+        assert "sess-123" in msg
+        assert "Review the design" in msg
+        assert "[RECIPE COMPLETE]" not in msg
 
     @pytest.mark.asyncio
     async def test_truncates_long_output(

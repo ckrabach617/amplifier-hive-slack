@@ -98,7 +98,6 @@ class InProcessSessionManager:
                             "extended_thinking": True,
                             "force_respond_tools": [
                                 "dispatch_worker",
-                                "recipes",
                             ],
                         },
                     },
@@ -612,7 +611,6 @@ class InProcessSessionManager:
                         "extended_thinking": True,
                         "force_respond_tools": [
                             "dispatch_worker",
-                            "recipes",
                         ],
                     },
                 )
