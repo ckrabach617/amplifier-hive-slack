@@ -445,122 +445,19 @@ class TestWrappedToolInteraction:
 
 
 # ---------------------------------------------------------------------------
-# Direct Slack posting (slack_post_fn)
+# Queue-only notification (no direct Slack posting)
 # ---------------------------------------------------------------------------
 
 
-class TestDirectSlackPosting:
-    """When slack_post_fn is provided, notifications post directly to Slack."""
+class TestQueueOnlyNotification:
+    """All notifications go through notify_fn queue to the Director's session."""
 
     @pytest.mark.asyncio
-    async def test_posts_directly_on_success(
+    async def test_queue_used_on_success(
         self,
         worker_manager: WorkerManager,
     ):
-        """slack_post_fn is awaited instead of notify_fn on success."""
-        posted: list[str] = []
-
-        async def _slack_post(msg: str) -> None:
-            posted.append(msg)
-
-        queue = MagicMock()
-        wrapper = AsyncRecipesTool(
-            wrapped_tool=FakeRecipesTool(),
-            worker_manager=worker_manager,
-            notify_fn=queue,
-            slack_post_fn=_slack_post,
-        )
-        await wrapper.execute({"operation": "execute", "recipe_path": "test.yaml"})
-        await asyncio.sleep(0.1)
-
-        assert len(posted) == 1
-        assert "[RECIPE COMPLETE]" in posted[0]
-        queue.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_posts_directly_on_failure(
-        self,
-        worker_manager: WorkerManager,
-    ):
-        """slack_post_fn is used for failure notifications too."""
-        posted: list[str] = []
-
-        async def _slack_post(msg: str) -> None:
-            posted.append(msg)
-
-        queue = MagicMock()
-        wrapper = AsyncRecipesTool(
-            wrapped_tool=FakeRecipesTool(error=RuntimeError("boom")),
-            worker_manager=worker_manager,
-            notify_fn=queue,
-            slack_post_fn=_slack_post,
-        )
-        await wrapper.execute({"operation": "execute", "recipe_path": "fail.yaml"})
-        await asyncio.sleep(0.1)
-
-        assert len(posted) == 1
-        assert "[RECIPE FAILED]" in posted[0]
-        assert "boom" in posted[0]
-        queue.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_posts_directly_on_cancel(
-        self,
-        worker_manager: WorkerManager,
-    ):
-        """slack_post_fn is used for cancellation notifications."""
-        posted: list[str] = []
-
-        async def _slack_post(msg: str) -> None:
-            posted.append(msg)
-
-        queue = MagicMock()
-        wrapper = AsyncRecipesTool(
-            wrapped_tool=FakeRecipesTool(delay=10),
-            worker_manager=worker_manager,
-            notify_fn=queue,
-            slack_post_fn=_slack_post,
-        )
-        await wrapper.execute({"operation": "execute", "recipe_path": "slow.yaml"})
-        await asyncio.sleep(0)
-        active = worker_manager.get_active()
-        worker_manager.cancel(active[0].task_id)
-        await asyncio.sleep(0.1)
-
-        assert len(posted) == 1
-        assert "[RECIPE CANCELLED]" in posted[0]
-        queue.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_falls_back_to_queue_on_post_error(
-        self,
-        worker_manager: WorkerManager,
-    ):
-        """If slack_post_fn raises, falls back to notify_fn queue."""
-
-        async def _failing_post(msg: str) -> None:
-            raise ConnectionError("Slack API down")
-
-        queue = MagicMock()
-        wrapper = AsyncRecipesTool(
-            wrapped_tool=FakeRecipesTool(),
-            worker_manager=worker_manager,
-            notify_fn=queue,
-            slack_post_fn=_failing_post,
-        )
-        await wrapper.execute({"operation": "execute", "recipe_path": "test.yaml"})
-        await asyncio.sleep(0.1)
-
-        queue.assert_called_once()
-        msg = queue.call_args[0][0]
-        assert "[RECIPE COMPLETE]" in msg
-
-    @pytest.mark.asyncio
-    async def test_no_slack_post_fn_uses_queue(
-        self,
-        worker_manager: WorkerManager,
-    ):
-        """Without slack_post_fn, notify_fn queue is used (backward compat)."""
+        """Completion notifications are queued for the Director."""
         queue = MagicMock()
         wrapper = AsyncRecipesTool(
             wrapped_tool=FakeRecipesTool(),

@@ -8,13 +8,17 @@ asyncio tasks tracked by the shared WorkerManager.
 
 Quick operations (list, validate, approvals, approve, deny, cancel) pass
 through synchronously because they return instantly.
+
+All notifications are queued for the Director's session (never posted directly
+to Slack).  The Director is the only voice in the channel -- background
+processes must speak through it.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Awaitable, Callable
+from typing import Any, Callable
 
 from hive_slack.worker_manager import WorkerManager
 
@@ -37,12 +41,10 @@ class AsyncRecipesTool:
         wrapped_tool: Any,
         worker_manager: WorkerManager,
         notify_fn: Callable[[str], None],
-        slack_post_fn: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self._wrapped = wrapped_tool
         self._workers = worker_manager
         self._notify_queue = notify_fn
-        self._slack_post_fn = slack_post_fn
         self._counter = 0
 
     # -- Tool protocol ---------------------------------------------------------
@@ -58,25 +60,6 @@ class AsyncRecipesTool:
     @property
     def input_schema(self) -> dict:
         return getattr(self._wrapped, "input_schema", {})
-
-    # -- Helpers ---------------------------------------------------------------
-
-    async def _post(self, message: str) -> None:
-        """Post a notification directly to Slack, falling back to queue.
-
-        When a ``slack_post_fn`` was provided (i.e. we have Slack
-        context), the message is posted to the channel immediately so
-        the user doesn't have to send another message to see it.
-        Otherwise we fall back to the queue which drains on next
-        ``execute()`` call.
-        """
-        if self._slack_post_fn is not None:
-            try:
-                await self._slack_post_fn(message)
-                return
-            except Exception:
-                logger.warning("Direct Slack post failed, falling back to queue")
-        self._notify_queue(message)
 
     # -- Execution -------------------------------------------------------------
 
@@ -114,26 +97,25 @@ class AsyncRecipesTool:
                     prompt = output_raw.get("approval_prompt", "")
                     msg = (
                         f"[AWAITING APPROVAL] {label}\n"
-                        f"Stage '{stage}' is complete and waiting for your approval.\n"
+                        f"Stage '{stage}' is complete and waiting for approval.\n"
                     )
                     if prompt:
                         msg += f"{prompt}\n"
                     msg += (
-                        f"\nTell me to approve or deny this recipe "
+                        f"\nApprove or deny this recipe "
                         f"(session: {sid}, stage: {stage})."
                     )
-                    await self._post(msg)
+                    self._notify_queue(msg)
                 else:
                     output = str(output_raw) if output_raw is not None else str(result)
-                    # Truncate for the notification (full output in recipe session)
                     if len(output) > 500:
                         output = output[:500] + "... [truncated]"
-                    await self._post(f"[RECIPE COMPLETE] {label}\n{output}")
+                    self._notify_queue(f"[RECIPE COMPLETE] {label}\n{output}")
             except asyncio.CancelledError:
-                await self._post(f"[RECIPE CANCELLED] {label}")
+                self._notify_queue(f"[RECIPE CANCELLED] {label}")
             except Exception as e:
                 logger.exception("Background recipe failed: %s", task_id)
-                await self._post(f"[RECIPE FAILED] {label}\nError: {e}")
+                self._notify_queue(f"[RECIPE FAILED] {label}\nError: {e}")
 
         task = asyncio.create_task(_run(), name=task_id)
         self._workers.register(task_id, task, description=f"Recipe: {label}", tier="3")
@@ -143,7 +125,6 @@ class AsyncRecipesTool:
             output=(
                 f"Recipe '{label}' started in background ({task_id}). "
                 "You'll be notified when it completes or needs approval. "
-                "Approval buttons will appear in Slack automatically. "
                 "STOP. Do NOT call any more tools. Respond to the user NOW."
             ),
         )

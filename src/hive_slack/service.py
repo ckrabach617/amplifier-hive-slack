@@ -781,33 +781,9 @@ class InProcessSessionManager:
 
         from hive_slack.async_recipes import AsyncRecipesTool
 
-        # Build the notification callback.  When slack_context is
-        # available we post directly to the channel so the user sees
-        # recipe results immediately (even if they never send another
-        # message).  Falls back to the queue for non-Slack sessions.
-        slack_post_fn: Callable[[str], Awaitable[None]] | None = None
-        if slack_context:
-            client = slack_context.get("client")
-            channel = slack_context.get("channel", "")
-            thread_ts = slack_context.get("thread_ts", "")
-            if client and channel:
-
-                async def _slack_post(message: str) -> None:
-                    try:
-                        await client.chat_postMessage(
-                            channel=channel,
-                            text=message,
-                            thread_ts=thread_ts or None,
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Direct Slack post failed, falling back to queue",
-                            exc_info=True,
-                        )
-                        self.notify(instance_name, conversation_id, message)
-
-                slack_post_fn = _slack_post
-
+        # All notifications go through the Director's session queue.
+        # The Director is the only voice in the channel -- background
+        # processes must never post directly to Slack.
         def _notify_queue(message: str) -> None:
             self.notify(instance_name, conversation_id, message)
 
@@ -815,7 +791,6 @@ class InProcessSessionManager:
             wrapped_tool=original,
             worker_manager=self._worker_manager,
             notify_fn=_notify_queue,
-            slack_post_fn=slack_post_fn,
         )
 
         try:
