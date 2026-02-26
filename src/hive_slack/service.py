@@ -136,6 +136,21 @@ class InProcessSessionManager:
                     exc_info=True,
                 )
 
+            # Compose researcher behavior for research pipeline agents
+            try:
+                researcher_behavior = await load_bundle(
+                    "git+https://github.com/ckrabach617/amplifier-bundle-researcher@main"
+                    "#subdirectory=behaviors/researcher.yaml"
+                )
+                bundle = bundle.compose(researcher_behavior)
+                logger.info("Composed researcher behavior (research pipeline agents)")
+            except Exception:
+                logger.warning(
+                    "Could not load researcher bundle. "
+                    "Research pipeline agents will not be available.",
+                    exc_info=True,
+                )
+
             # Compose recipes behavior for Tier 3 staged approval workflows
             try:
                 recipes_behavior = await load_bundle(
