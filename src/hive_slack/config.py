@@ -20,6 +20,17 @@ class PersonaConfig:
 
 
 @dataclass
+class A2aConfig:
+    """Agent-to-Agent communication configuration."""
+
+    port: int = 8222
+    realtime_response: bool = True
+    agent_name: str = ""
+    agent_description: str = ""
+    known_agents: list[dict[str, str]] | None = None
+
+
+@dataclass
 class InstanceConfig:
     """Configuration for a single Amplifier instance."""
 
@@ -27,6 +38,7 @@ class InstanceConfig:
     bundle: str
     working_dir: str
     persona: PersonaConfig
+    a2a: A2aConfig | None = None
 
 
 @dataclass
@@ -116,6 +128,17 @@ def _parse_instance(name: str, data: dict[str, Any]) -> InstanceConfig:
     if working_dir.startswith("~"):
         working_dir = str(Path(working_dir).expanduser())
 
+    a2a: A2aConfig | None = None
+    a2a_data = data.get("a2a")
+    if a2a_data is not None:
+        a2a = A2aConfig(
+            port=a2a_data.get("port", 8222),
+            realtime_response=a2a_data.get("realtime_response", True),
+            agent_name=a2a_data.get("agent_name", ""),
+            agent_description=a2a_data.get("agent_description", ""),
+            known_agents=a2a_data.get("known_agents"),
+        )
+
     return InstanceConfig(
         name=name,
         bundle=data.get("bundle", "foundation"),
@@ -124,6 +147,7 @@ def _parse_instance(name: str, data: dict[str, Any]) -> InstanceConfig:
             name=persona_data.get("name", name.title()),
             emoji=persona_data.get("emoji", ":robot_face:"),
         ),
+        a2a=a2a,
     )
 
 

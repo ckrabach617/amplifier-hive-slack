@@ -5,6 +5,11 @@ instances:
     persona:
       name: Director
       emoji: ":robot_face:"
+    a2a:
+      port: 8223
+      realtime_response: true
+      agent_name: The Director
+      agent_description: "Charlie's personal AI orchestrator via Slack"
   
   beta:
     bundle: foundation

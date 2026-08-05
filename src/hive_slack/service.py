@@ -750,6 +750,60 @@ class InProcessSessionManager:
                             exc_info=True,
                         )
 
+            # Mount A2A (Agent-to-Agent) if configured for this instance.
+            # Server hook must mount before the client tool (it registers
+            # the "a2a.registry" capability that the tool reads lazily).
+            if instance.a2a is not None:
+                a2a_config = {
+                    "port": instance.a2a.port,
+                    "realtime_response": instance.a2a.realtime_response,
+                    "agent_name": (
+                        instance.a2a.agent_name
+                        or (
+                            instance.persona.name
+                            if instance.persona and instance.persona.name
+                            else instance_name
+                        )
+                    ),
+                    "agent_description": (
+                        instance.a2a.agent_description or "Amplifier agent via Slack"
+                    ),
+                }
+                if instance.a2a.known_agents:
+                    a2a_config["known_agents"] = instance.a2a.known_agents
+
+                try:
+                    from amplifier_module_hooks_a2a_server import (
+                        mount as _mount_a2a_server,
+                    )
+
+                    await _mount_a2a_server(session.coordinator, config=a2a_config)
+                    logger.info(
+                        "Mounted A2A server on port %d for %s",
+                        instance.a2a.port,
+                        instance_name,
+                    )
+                except ImportError:
+                    logger.warning(
+                        "amplifier-module-hooks-a2a-server not installed. "
+                        "A2A server will not be available."
+                    )
+                except Exception:
+                    logger.warning("Could not mount A2A server hook", exc_info=True)
+
+                try:
+                    from amplifier_module_tool_a2a import mount as _mount_a2a_tool
+
+                    await _mount_a2a_tool(session.coordinator, config={})
+                    logger.info("Mounted A2A client tool for %s", instance_name)
+                except ImportError:
+                    logger.warning(
+                        "amplifier-module-tool-a2a not installed. "
+                        "A2A client tool will not be available."
+                    )
+                except Exception:
+                    logger.warning("Could not mount A2A client tool", exc_info=True)
+
             # Wrap the recipes tool for non-blocking execution.
             # The bundle composes the real recipes tool during prepare().
             # We find it by name, wrap it with AsyncRecipesTool (which
